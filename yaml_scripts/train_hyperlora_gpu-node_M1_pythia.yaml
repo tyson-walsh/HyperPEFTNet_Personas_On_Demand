@@ -1,0 +1,732 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hyperlora-gpu-node-m1-pythia
+  namespace: default
+
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: hyperlora-gpu-node-m1-pythia
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 600
+
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          value: "gpu-node"
+          effect: "NoSchedule"
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - ANON-HIGHMEM-ACCELERATOR
+
+      volumes:
+        - name: home-vol
+          nfs:
+            server: 10.0.0.1
+            path: /workspace
+        - name: data10-vol
+          nfs:
+            server: 10.0.0.2
+            path: /data
+        - name: tmp-vol
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "48Gi"
+        - name: progress
+          nfs:
+            server: 10.0.0.2
+            path: /data/shared/k8s_progress_logs
+
+      containers:
+        - name: hyperlora-gpu-node-m1-pythia
+          image: ghcr.io/anonymous/hypernets-pip-slim:v19-arm64
+          imagePullPolicy: Always
+          terminationMessagePolicy: FallbackToLogsOnError
+
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "480Gi"
+              cpu: "23"
+              # Bumped to host the staged pretok cache on /tmp emptyDir
+              # alongside the parquet hot-stage. ~38 GB pretok cache + ~3.5 GB
+              # parquets + headroom for working files = 60 GB requests, 100 GB
+              # limit. NFS read avoidance during training is the win.
+              ephemeral-storage: "100Gi"
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "256Gi"
+              cpu: "23"
+              ephemeral-storage: "60Gi"
+
+          volumeMounts:
+            - name: home-vol
+              mountPath: /workspace
+            - name: data10-vol
+              mountPath: /data
+            - name: tmp-vol
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+            - name: progress
+              mountPath: /progress
+
+          env:
+            - name: TZ
+              value: "EST5EDT,M3.2.0,M11.1.0/2"
+            - name: UCX_HANDLE_ERRORS
+              value: "bt"
+            - name: UCX_ERROR_SIGNALS
+              value: "SIGILL,SIGSEGV,SIGBUS,SIGFPE"
+            - name: UCX_LOG_LEVEL
+              value: "error"
+            - name: PYTHONFAULTHANDLER
+              value: "1"
+            - name: CUDA_LAUNCH_BLOCKING
+              value: "0"
+            - name: CUDA_MODULE_LOADING
+              value: "EAGER"
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+            - name: HF_HOME
+              value: /data/.cache/huggingface
+            - name: HUGGINGFACE_HUB_CACHE
+              value: /data/.cache/huggingface/hub
+            - name: TRANSFORMERS_CACHE
+              value: /data/.cache/huggingface/transformers
+            - name: HF_DATASETS_CACHE
+              value: /data/.cache/huggingface/datasets
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            - name: OMP_NUM_THREADS
+              value: "1"
+            # 512 MB split-size cap to absorb the activation chunks
+            # Pythia-1.4B's 24 decoder blocks bring;
+            # high-memory GPU unified memory backs anything that overflows HBM.
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True,max_split_size_mb:512"
+            - name: NCCL_DEBUG
+              value: "WARN"
+            - name: TORCH_DISTRIBUTED_DEBUG
+              value: "OFF"
+            - name: NCCL_P2P_DISABLE
+              value: "1"
+            - name: NCCL_IB_DISABLE
+              value: "1"
+            - name: TORCH_NCCL_BLOCKING_WAIT
+              value: "1"
+            - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+              value: "1"
+            - name: NCCL_SOCKET_IFNAME
+              value: "eth0"
+            - name: MASTER_ADDR
+              value: "127.0.0.1"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: MASTER_PORT
+              value: "29612"
+            - name: HN_LEAKAGE_SAFE
+              value: "1"
+            - name: HN_G_CACHE
+              value: "20000"
+            - name: HN_HEAD_MODE
+              value: "multi"
+            - name: HN_DISABLE_GATES
+              value: "0"
+            - name: HN_ALPHA_INIT_STD
+              value: "5e-4"
+            - name: HN_DELTA_GAIN
+              value: "12.0"
+            - name: HN_DICT_INIT_STD
+              value: "0.05"
+            - name: HN_DDP_DEBUG_PROBE
+              value: "0"
+            - name: HN_DICT_OUT_CHUNK
+              value: "0"
+            - name: CTX_MICRO_FREQ
+              value: "0"
+            - name: CTX_STEP_FREQ
+              value: "999999"
+            - name: CTX_BOUNDARY_TRAIN_APPLY_GUARD
+              value: "zero"
+            - name: CE_CHUNK_TOKENS
+              value: "256"
+            - name: LOG_MAIN_RANK_ONLY
+              value: "1"
+            - name: HN_ALLOW_REENTRANT_CHECKPOINT
+              value: "1"
+            - name: PYTHONPATH
+              value: "/workspace/hypernets/data_scripts:/workspace/hypernets/training_scripts"
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+            - name: PYTHONWARNINGS
+              value: "ignore"
+            - name: HF_HUB_OFFLINE
+              value: "0"
+            - name: TRANSFORMERS_OFFLINE
+              value: "0"
+            - name: HEARTBEAT_EVERY_SECS
+              value: "900"
+            - name: PREEMPT_FILE
+              value: "/tmp/preempt.now"
+            - name: CKPT_EVERY_STEPS
+              value: "100"
+            # Tagged-snapshot interval. The bash watcher in args copies the
+            # _last.safetensors files to snapshots/step_NNNN/ at every
+            # multiple of this. Post-hoc eval picks the best by val_ce.
+            - name: CKPT_SNAPSHOT_EVERY_STEPS
+              value: "400"
+            - name: HN_USE_UNIFIED_MEMORY
+              value: "1"
+            # Pretok cache lives on data10 long-term (post-2026-04-21 migration
+            # policy) but at pod boot we hot-stage the four cache files into
+            # /tmp/pretok_cache so the dataloader hits node-local emptyDir
+            # instead of NFS. The bash args block does the copy; the env var
+            # below points the runtime at the staged location, NOT the data10
+            # source. If the staging step fails, downstream falls back to the
+            # data10 source via the staging fallback (we re-export the env
+            # var to data10 if /tmp staging didn't land all four files).
+            - name: HN_PRETOK_CACHE_DIR
+              value: "/tmp/pretok_cache"
+            - name: HN_PRETOK_CACHE_SRC
+              value: "/data/hypernets/data/pretok_cache"
+
+          workingDir: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -Eeuo pipefail
+              set -x
+              umask 0002
+
+              # Disable OS NUMA balancing (prevents interference with CUDA page migration)
+              echo 0 > /proc/sys/kernel/numa_balancing 2>/dev/null || true
+
+              # ====================================================================
+              # M1 PYTHIA-1.4B: r=24 emit_both (full LoRA) on the GPU node high-memory GPU
+              # --------------------------------------------------------------------
+              # Backbone: EleutherAI/pythia-1.4b (Pile-trained, no RLHF, GPT-NeoX
+              # architecture). 24 decoder blocks, hidden 2048, 16 attention heads,
+              # vocab 50304 (GPT-NeoX BPE), tied embeddings.
+              #
+              # This run trains the Pythia-1.4B HyperPEFT-LoRA model.
+              #
+              # Pythia-1.4B architecture notes:
+              #   - target_modules: "query_key_value,dense,dense_h_to_4h,dense_4h_to_h"
+              #     (Pythia has fused QKV in one module + attention output in `dense`,
+              #      and a non-gated 2-layer MLP). 4 leaves per block * 24 blocks
+              #      = 96 LoRA sites.
+              #   - Role mapping (handled in hypernetwork_structure_10000.py
+              #     `_role_of_leaf`): query_key_value -> qkv, dense -> o_proj,
+              #     dense_h_to_4h / dense_4h_to_h -> mlp.
+              #   - Hidden size 2048; LoRA shapes, hypernetwork emission heads,
+              #     and layerwise probe code drop in unmodified.
+              #   - 24 decoder layers; mbsearch picked
+              #     bs=96 mb=16 ga=8 to keep eff_batch on the
+              #     768/1536 schedule with comfortable HBM headroom.
+              #
+              # Runtime auto-enables: BF16 autocast, fused AdamW,
+              # TF32 matmul, flash/cuDNN SDP, RMM unified memory. No grad_ckpt.
+              # No torch.compile (incompatible with RMM).
+              # ====================================================================
+
+              TRAIN_SCRIPT="/workspace/hypernets/training_scripts/train_hyperlora.py"
+              MODELS_ROOT="/workspace/hypernets/models"
+              LOG_ROOT="/workspace/hypernets/log_files"
+              MODEL_TAG="M1_pythia14B_r24_full"
+              MDIR="${MODELS_ROOT}/hyperlora_gpu-node_${MODEL_TAG}"
+              LFILE="${LOG_ROOT}/train_hyperlora_gpu-node_${MODEL_TAG}_$(date +%Y%m%d).log"
+
+              mkdir -p /tmp/.cache /tmp/hf/hub /tmp/hf/transformers /tmp/hf/datasets
+              mkdir -p "${LOG_ROOT}" "${MDIR}"
+
+              # ---- HF token (Pythia is gated-light; token still helps with rate limits) ----
+              if [[ -f /workspace/hypernets/HF_TOKEN.txt ]]; then
+                CLEAN_TOKEN="$(tr -d '[:space:]' < /workspace/hypernets/HF_TOKEN.txt)"
+                if [[ -n "$CLEAN_TOKEN" ]]; then
+                  export HF_TOKEN="$CLEAN_TOKEN"
+                  export HUGGINGFACEHUB_API_TOKEN="$CLEAN_TOKEN"
+                  export HUGGINGFACE_HUB_TOKEN="$CLEAN_TOKEN"
+                fi
+              fi
+
+              echo "===== GPU inventory ====="
+              nvidia-smi -L || true
+              nvidia-smi || true
+
+              [[ -f /venv/bin/activate ]] && source /venv/bin/activate || true
+              python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available()); print('device', torch.cuda.get_device_name(0)) if torch.cuda.is_available() else None" || true
+
+              # ---- GPU telemetry ----
+              GPU_TELEM="${LOG_ROOT}/gpu_telem_gpu-node_m1pythia_${HOSTNAME}_$(date +%Y%m%d_%H%M%S).csv"
+              echo "timestamp,index,name,pstate,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.free,memory.used" > "$GPU_TELEM" || true
+              (
+                while true; do
+                  nvidia-smi --query-gpu=timestamp,index,name,pstate,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.free,memory.used \
+                    --format=csv,noheader,nounits >> "$GPU_TELEM" 2>/dev/null || true
+                  sleep 5
+                done
+              ) &
+              TELEM_PID=$!
+
+              # ---- Dashboard progress reporter ----
+              progress_reporter() {
+                local PFILE="/progress/${HOSTNAME}.json"
+
+                _wp() {
+                  printf '{"pod_name":"%s","task":"M1 Pythia-1.4B r24 emit_both (the GPU node)","status":"%s","progress_pct":%s,"message":"%s","updated_at":"%s"}\n' \
+                    "$HOSTNAME" "$1" "$2" "$3" "$(date -u +%FT%TZ)" > "$PFILE" 2>/dev/null || true
+                }
+
+                local test_file="/progress/.write_test_${HOSTNAME}"
+                if ! touch "$test_file" 2>/dev/null; then
+                  echo "[progress] WARNING: Cannot write to /progress/ directory." >&2
+                  return
+                fi
+                rm -f "$test_file" 2>/dev/null
+
+                _wp "starting" "0" "Initializing"
+
+                while true; do
+                  sleep 30
+                  if [[ -f "$LFILE" ]] && grep -q 'DONE\.' "$LFILE" 2>/dev/null; then
+                    _wp "completed" "100" "M1 Pythia complete"
+                    return
+                  fi
+                  local cur_step=0 total_steps=3331
+                  if [[ -f "$LFILE" ]]; then
+                    local s
+                    s=$(grep -oP 'run_step\s+\K\d+' "$LFILE" 2>/dev/null | tail -1)
+                    [[ -n "$s" ]] && cur_step="$s"
+                    local ts
+                    ts=$(grep -oP 'one_epoch:.*epoch_steps=\K\d+' "$LFILE" 2>/dev/null | tail -1)
+                    [[ -n "$ts" ]] && total_steps="$ts"
+                  fi
+                  local pct
+                  pct=$(awk "BEGIN {printf \"%.1f\", 100.0 * $cur_step / $total_steps}")
+                  local ce_str=""
+                  if [[ -f "$LFILE" ]]; then
+                    local ce
+                    ce=$(grep -oP 'CE\(TF\)\s+\K[0-9.]+' "$LFILE" 2>/dev/null | tail -1)
+                    [[ -n "$ce" ]] && ce_str="CE=${ce} | "
+                  fi
+                  _wp "running" "$pct" "${ce_str}step ${cur_step}/${total_steps}"
+                done
+              }
+
+              _write_failed_progress() {
+                local rc=$?
+                if [[ $rc -ne 0 ]] && [[ -d /progress ]]; then
+                  printf '{"pod_name":"%s","task":"M1 Pythia-1.4B r24 emit_both (the GPU node)","status":"failed","message":"Exit code %d","updated_at":"%s"}\n' \
+                    "$HOSTNAME" "$rc" "$(date -u +%FT%TZ)" > "/progress/${HOSTNAME}.json" 2>/dev/null || true
+                fi
+              }
+              trap _write_failed_progress EXIT
+
+              progress_reporter &
+
+              # ---- Stage parquets ----
+              echo "Stage parquet splits to /tmp..."
+              for f in train_full_10000.parquet val_full_10000.parquet author_static_10000.parquet; do
+                src="/workspace/hypernets/data/${f}"
+                dst="/tmp/${f}"
+                if [[ ! -f "$src" ]]; then
+                  echo "Missing required parquet: ${src}"
+                  exit 2
+                fi
+                cp "$src" "$dst"
+              done
+              ls -lh /tmp/*.parquet
+
+              # ---- Stage pretok cache to /tmp (NFS read avoidance) ----
+              # The dead M1 pod ran at 6 sec/microbatch reading 28 GB of
+              # pretok tensors over NFS through the home->data10 symlink.
+              # Hot-staging to /tmp emptyDir (node-local SSD/RAM) at boot
+              # adds 1-2 minutes to startup but eliminates NFS read latency
+              # from every microbatch for the rest of the 5-9 day run.
+              # Files: train items + train pretok + val items + val pretok.
+              echo "Stage pretok cache to ${HN_PRETOK_CACHE_DIR} from ${HN_PRETOK_CACHE_SRC}..."
+              mkdir -p "${HN_PRETOK_CACHE_DIR}"
+              _pretok_staged=0
+              _pretok_total=0
+              for f in items_cc8c3067b2db6186_rows6344595_ml512_causal.pkl \
+                       items_b1cf10b0319b8988_rows1817065_ml512_causal.pkl \
+                       pretok_7f9e3d3b7ac49efd_n2097117_ml512_causal.pt \
+                       pretok_852d2441b249d76d_n599923_ml512_causal.pt; do
+                src="${HN_PRETOK_CACHE_SRC}/${f}"
+                dst="${HN_PRETOK_CACHE_DIR}/${f}"
+                _pretok_total=$((_pretok_total + 1))
+                if [[ ! -f "${src}" ]]; then
+                  echo "  [stage-pretok] missing source ${src}; will rebuild from parquet on first use"
+                  continue
+                fi
+                if [[ -f "${dst}" ]]; then
+                  echo "  [stage-pretok] already staged: $(basename ${dst})"
+                  _pretok_staged=$((_pretok_staged + 1))
+                  continue
+                fi
+                local_t0=$(date +%s)
+                cp "${src}" "${dst}"
+                local_t1=$(date +%s)
+                echo "  [stage-pretok] copied $(basename ${dst}) ($((local_t1 - local_t0)) sec)"
+                _pretok_staged=$((_pretok_staged + 1))
+              done
+              echo "[stage-pretok] staged ${_pretok_staged}/${_pretok_total} cache files to /tmp"
+              ls -lh "${HN_PRETOK_CACHE_DIR}/" 2>/dev/null || true
+              # If staging failed for any reason, fall back to data10 NFS path
+              # so training still succeeds (slower but functional).
+              if (( _pretok_staged == 0 )); then
+                echo "[stage-pretok] WARNING: zero cache files staged; reverting HN_PRETOK_CACHE_DIR to data10 NFS source"
+                export HN_PRETOK_CACHE_DIR="${HN_PRETOK_CACHE_SRC}"
+              fi
+
+              # Verify GoEmotions labels exist (used for FRG eval, post-hoc)
+              GOEMO_LABELS="/workspace/hypernets/data/labels_sentiment_goemo.csv"
+              if [[ ! -f "$GOEMO_LABELS" ]]; then
+                echo "FATAL: GoEmotions labels not found at ${GOEMO_LABELS}"
+                echo "Run goemo_labels.yaml first to generate them."
+                exit 2
+              fi
+
+              # ---- Feature disable list (v7 ablation, K=20 effective) ----
+              DISABLE_LIST="gstat_user_ttr,gstat_user_post_rate,gstat_user_subreddit_entropy,gstat_user_sr_herfindahl,gstat_punct_ratio,gstat_profanity_ratio,gstat_abuse_ratio,gstat_firstperson_ratio,gstat_secondperson_ratio,gstat_weekend_ratio,gstat_hedge_ratio,gstat_intensifier_ratio,gstat_modal_ratio,gstat_agreement_ratio,gstat_disagreement_ratio,gstat_slang_ratio,gstat_emoji_ratio,gstat_ellipsis_ratio,gstat_punct_burst_ratio,gstat_sarcasm_ratio,gstat_quote_ratio,gstat_peak_hour,gstat_reply_delay_mean,gstat_reply_delay_median,gstat_reply_delay_p05,gstat_reply_delay_p95,gstat_sent_per_post,gstat_sent_len_mean,gstat_sent_len_cv,gstat_excl_sent_ratio,gstat_subordination_ratio,gstat_opener_question_ratio,gstat_post_len_cv,gstat_post_len_skew,gstat_style_volatility,gstat_lexical_diversity_curve,gstat_response_elaboration,gstat_ctx_len_preference,gstat_beast_reactive_prob,gstat_user_sent_mean"
+
+              # ---- Resume state ----
+              # train_hyperlora.py creates a "hyperlora_multi/" subdir under
+              # --models_output_dir; resume.state and *_last.safetensors live
+              # there, NOT directly under MDIR. So the resume pointers point
+              # one level deeper.
+              CKPT_DIR="${MDIR}/hyperlora_multi"
+
+              # train_hyperlora.py's resume path is gated on these two env
+              # vars; without them the trainer silently starts at step 1
+              # even if resume.state exists (see feedback_yaml_resume_wiring).
+              export HN_LOAD_HYPER_FROM="${CKPT_DIR}"
+              export HN_RESUME_POINTER="${CKPT_DIR}/resume.state"
+
+              RESUME_PTR="${CKPT_DIR}/resume.state"
+              COMPLETED=0
+              if [[ -f "$RESUME_PTR" ]]; then
+                val="$(awk -F= '/^COMPLETED_STEPS=/{print $2}' "$RESUME_PTR" 2>/dev/null | head -n1 || true)"
+                if [[ -n "${val}" && "$val" =~ ^[0-9]+$ ]]; then
+                  COMPLETED="$val"
+                fi
+              fi
+
+              # ---- Tagged-snapshot watcher ----
+              # train_hyperlora.py overwrites *_last.safetensors in place at
+              # every CKPT_EVERY_STEPS interval. To preserve a trajectory of
+              # snapshots for post-hoc val_ce selection, this background
+              # watcher polls resume.state and when COMPLETED_STEPS crosses a
+              # multiple of CKPT_SNAPSHOT_EVERY_STEPS it copies the _last
+              # files into snapshots/step_NNNN/. Stripped of the _last suffix
+              # in the snapshot dir so eval scripts find them under canonical
+              # names. The post-hoc eval yaml picks the best by val_ce.
+              SNAPSHOT_BASE="${CKPT_DIR}/snapshots"
+              mkdir -p "${SNAPSHOT_BASE}"
+              SNAPSHOT_EVERY="${CKPT_SNAPSHOT_EVERY_STEPS:-400}"
+              (
+                declare -A snapshotted
+                # Repopulate from any pre-existing snapshot dirs (resume case).
+                for d in "${SNAPSHOT_BASE}"/step_*; do
+                  [[ -d "$d" ]] || continue
+                  s="${d##*step_}"
+                  s="${s##0}"
+                  [[ -z "$s" ]] && s=0
+                  snapshotted[$s]=1
+                done
+                while true; do
+                  sleep 60
+                  [[ -f "${RESUME_PTR}" ]] || continue
+                  cs="$(awk -F= '/^COMPLETED_STEPS=/{print $2}' "${RESUME_PTR}" 2>/dev/null | head -n1 || true)"
+                  [[ -n "${cs}" && "${cs}" =~ ^[0-9]+$ ]] || continue
+                  target=$(( (cs / SNAPSHOT_EVERY) * SNAPSHOT_EVERY ))
+                  (( target > 0 )) || continue
+                  [[ -z "${snapshotted[$target]+x}" ]] || continue
+                  dst="${SNAPSHOT_BASE}/step_$(printf '%04d' "$target")"
+                  if [[ -d "${dst}" ]]; then
+                    snapshotted[$target]=1
+                    continue
+                  fi
+                  mkdir -p "${dst}"
+                  for fn in hypernetwork peft_placeholders ctx_params probe_head; do
+                    src="${CKPT_DIR}/${fn}_last.safetensors"
+                    if [[ -f "${src}" ]]; then
+                      cp "${src}" "${dst}/${fn}.safetensors"
+                    fi
+                  done
+                  for aux in group_scales.json feature_manifest.json; do
+                    src="${CKPT_DIR}/${aux}"
+                    if [[ -f "${src}" ]]; then
+                      cp "${src}" "${dst}/${aux}"
+                    fi
+                  done
+                  # Tokenizer files (so each snapshot is self-contained).
+                  for tok_fn in tokenizer.json tokenizer_config.json special_tokens_map.json; do
+                    src="${CKPT_DIR}/${tok_fn}"
+                    if [[ -f "${src}" ]]; then
+                      cp "${src}" "${dst}/${tok_fn}"
+                    fi
+                  done
+                  echo "[snapshot-watcher] $(date -Is) saved snapshot at COMPLETED_STEPS=${cs} -> ${dst}" \
+                    | tee -a "${LFILE}" || true
+                  snapshotted[$target]=1
+                done
+              ) &
+              SNAPSHOT_WATCHER_PID=$!
+              # Merge with any prior EXIT trap rather than clobbering it.
+              # _write_failed_progress was registered above; re-register both.
+              trap '[[ -n "${SNAPSHOT_WATCHER_PID:-}" ]] && kill "${SNAPSHOT_WATCHER_PID}" 2>/dev/null || true; _write_failed_progress 2>/dev/null || true' EXIT
+
+              # ---- Hyperparameters ----
+              # 2026-04-26 mbsearch winner (round 1, probe 7): bs=96 mb=16
+              # ga=8 ckpt=off. Measured at 62 sec/step phase 1 on the GPU node
+              # high-memory GPU v19-arm64 with FA2 + bf16 + /tmp pretok staging. HBM
+              # 57.1 / 102.0 GB (56%) — comfortable headroom. The earlier
+              # bs=128 mb=16 ga=6 config hit 60.6 sec/step but at 95% HBM,
+              # which left no margin for memory drift over a multi-day run;
+              # bs=96 buys 39 GB of headroom for ~2.4% throughput cost.
+              # Round-2 grad_ckpt sweep (use_reentrant=True) confirmed grad
+              # checkpoint costs ~3.6x throughput on this architecture and
+              # is strictly dominated; production stays ckpt=off.
+              BATCH_SIZE=96
+              MICROBATCH_SIZE=16
+              GRAD_ACCUM=8
+              EFF_BATCH=$(( BATCH_SIZE * GRAD_ACCUM ))
+              MICROS_PER_STEP=$(( (BATCH_SIZE + MICROBATCH_SIZE - 1) / MICROBATCH_SIZE * GRAD_ACCUM ))
+              LORA_R=24
+              LORA_ALPHA=48
+              TRAIN_STEPS=3331
+
+              _emit_config_banner() {
+                echo "================================================================"
+                echo "  M1 PYTHIA-1.4B FLAGSHIP CONFIG  ($(date -Is))"
+                echo "  ----------------------------------------------------------"
+                echo "  MODEL_TAG              ${MODEL_TAG}"
+                echo "  base_model             EleutherAI/pythia-1.4b"
+                echo "  emit_both              YES (dA + dB; full LoRA)"
+                echo "  image                  ghcr.io/anonymous/hypernets-pip-slim:v19-arm64"
+                echo "                         (NGC 26.03-py3, PT 2.9, CUDA 13.2, cuDNN 9.x)"
+                echo "  ----------------------------------------------------------"
+                echo "  LoRA geometry"
+                echo "    lora_r               ${LORA_R}"
+                echo "    lora_alpha           ${LORA_ALPHA}    (alpha/r = 2.0)"
+                echo "    lora_dropout         0.05"
+                echo "    target_modules       query_key_value,dense,dense_h_to_4h,dense_4h_to_h"
+                echo "                         (4 leaves x 24 blocks = 96 LoRA sites)"
+                echo "    role mapping         qkv = query_key_value;"
+                echo "                         o_proj = dense;"
+                echo "                         mlp = dense_h_to_4h, dense_4h_to_h"
+                echo "  ----------------------------------------------------------"
+                echo "  Batch geometry  (Pythia-aware: smaller microbatch, larger grad_accum)"
+                echo "    batch_size           ${BATCH_SIZE}    (single-rank; mbsearch round-1 winner: 62 s/step at HBM 57% with FA2)"
+                echo "    microbatch_size      ${MICROBATCH_SIZE}    (6 tiles per batch)"
+                echo "    grad_accum           ${GRAD_ACCUM} -> 16 @ step 1200 (eff_batch ramp 768 -> 1536, phase-schedule semantics)"
+                echo "    eff_batch            ${EFF_BATCH} -> 1536 (phase 1 / phase 2)"
+                echo "    micros_per_optstep   ${MICROS_PER_STEP}"
+                echo "  ----------------------------------------------------------"
+                echo "  Optim"
+                echo "    lr                   5e-4  ->  min_lr 3e-4"
+                echo "    scheduler            cosine, warmup_frac=0.05"
+                echo "    weight_decay         1e-4"
+                echo "    max_grad_norm        1.0"
+                echo "    train_steps          ${TRAIN_STEPS}  (~2 epochs over 10K users)"
+                echo "  ----------------------------------------------------------"
+                echo "  Loss"
+                echo "    CE                   ON"
+                echo "    L2(delta) coef       1e-4"
+                echo "    boundary CE          0.0     (zeroed)"
+                echo "    delta diversity      0.0     (zeroed)"
+                echo "    FRG separation       0.0     (zeroed)"
+                echo "    probe loss           0.0     (zeroed)"
+                echo "    clamp_max            0.020   (no curriculum ramp)"
+                echo "  ----------------------------------------------------------"
+                echo "  Hypernet"
+                echo "    hyper_hidden_dim     256"
+                echo "    hyper_out_rank       16"
+                echo "    dict_k_global        64"
+                echo "    dict_k_per_role      8"
+                echo "    head_mode            multi"
+                echo "    ctx_embed_dim        32   (use_layer_context=YES)"
+                echo "  ----------------------------------------------------------"
+                echo "  Runtime (high-memory GPU)"
+                echo "    RMM unified memory   ON   (HN_USE_UNIFIED_MEMORY=1)"
+                echo "    BF16 autocast        ON"
+                echo "    fused AdamW          ON"
+                echo "    flash/cuDNN SDP      ON"
+                echo "    TF32 matmul          ON"
+                echo "    torch.compile        OFF  (incompatible with RMM)"
+                echo "    grad checkpoint      OFF  (unified memory makes it unnecessary)"
+                echo "    num_workers          8"
+                echo "    prefetch_factor      8    (bumped from 4 post-2026-04-26 throughput audit)"
+                echo "  ----------------------------------------------------------"
+                echo "  Resume"
+                echo "    COMPLETED_STEPS      ${COMPLETED}"
+                echo "    MDIR                 ${MDIR}"
+                echo "    LFILE                ${LFILE}"
+                echo "================================================================"
+              }
+              echo ""
+              _emit_config_banner
+              echo ""
+              mkdir -p "$(dirname "$LFILE")"
+              : > "${LFILE}"
+              _emit_config_banner > "${LFILE}"
+              echo "" >> "${LFILE}"
+
+              # ---- Hang watchdog ----
+              (
+                local lf="$LFILE"
+                local thresh=1800 check=60 lm=0
+                local lc
+                lc="$(date +%s)"
+                while true; do
+                  if [[ -f "$lf" ]]; then
+                    local mt
+                    mt="$(stat -c %Y "$lf" 2>/dev/null || echo 0)"
+                    if (( mt > lm )); then lm="$mt"; lc="$(date +%s)"; fi
+                    local now
+                    now="$(date +%s)"
+                    if (( now - lc > thresh )); then
+                      echo "[watchdog][M1-pythia] no log advance for $((now-lc))s at $(date -Is)"
+                      tail -n 100 "$lf" || true
+                      break
+                    fi
+                  fi
+                  sleep "$check"
+                done
+              ) &
+              WD_PID=$!
+
+              # ================================================================
+              # Production launch. mbsearch round-1 (2026-04-26) measured this
+              # exact shape (bs=96 mb=16 ga=8 ckpt=off) at 62 s/step phase 1
+              # with HBM 57.1/102 GB (56%, comfortable headroom). Phase 2
+              # doubles ga to 16 -> ~124 s/step. Total wall clock:
+              #   1200 phase-1 steps x 62s  ~= 20.7 h
+              #   2131 phase-2 steps x 124s ~= 73.4 h
+              #   total                     ~= 94 h ~= 3.9 days
+              # Grad checkpoint stays OFF: round-2 mbsearch confirmed it costs
+              # 3.6x throughput on this architecture (hypernet recompute + 24
+              # decoder layers) and HBM headroom is already comfortable here.
+              #
+              # In-training eval is DISABLED (eval_every=999999, frg_*=999999).
+              # The first attempt's eval pass at step 200 saturated HBM at
+              # 99.98%, tipped RMM into unified-memory paging, and locked
+              # us at 866 s/step (13.7x slowdown that the allocator never
+              # released). Loss is CE+L2 only; no aux losses depend on val,
+              # so disabling eval has zero training-correctness impact. A
+              # post-hoc job (eval_checkpoints_stdgpu_M1_pythia.yaml) iterates
+              # snapshots/step_NNNN/ and writes a val_ce leaderboard once
+              # training finishes; the best becomes the canonical "best/".
+              # ================================================================
+              stdbuf -oL -eL torchrun --standalone --nproc_per_node=1 --max_restarts=0 \
+                "$TRAIN_SCRIPT" \
+                --train_parquet /tmp/train_full_10000.parquet \
+                --val_parquet /tmp/val_full_10000.parquet \
+                --author_parquet /tmp/author_static_10000.parquet \
+                --base_model_id EleutherAI/pythia-1.4b \
+                --online \
+                --hf_token_file /workspace/hypernets/HF_TOKEN.txt \
+                --target_modules query_key_value,dense,dense_h_to_4h,dense_4h_to_h \
+                --train_steps 3331 \
+                --batch_size 96 \
+                --microbatch_size 16 \
+                --num_workers 8 \
+                --pin_memory \
+                --persistent_workers \
+                --pretokenize \
+                --prefetch_factor 8 \
+                --grad_accum_schedule "0:8,1200:16" \
+                --lr 5e-4 \
+                --scheduler cosine \
+                --min_lr 3e-4 \
+                --warmup_frac 0.05 \
+                --weight_decay 1e-4 \
+                --max_len 512 \
+                --log_interval 10 \
+                --eval_every 999999 \
+                --eval_progress_pct 0.02 \
+                --lora_r 24 \
+                --lora_alpha 48 \
+                --lora_dropout 0.05 \
+                --reply_budget 256 \
+                --max_grad_norm 1.0 \
+                --seed 142 \
+                --feature_profile all \
+                --disable_gstats "${DISABLE_LIST}" \
+                --use_layer_context \
+                --ctx_embed_dim 32 \
+                --hyper_hidden_dim 256 \
+                --dict_k_global 64 \
+                --dict_k_per_role 8 \
+                --hyper_out_rank 16 \
+                --head_mode multi \
+                --group_roles qkv,o_proj,mlp \
+                --zero_init_hyper_out \
+                --spectral_norm none \
+                --boundary_ce_weight 0.0 \
+                --ctx_step_freq 999999 \
+                --l2_delta_coef 1e-4 \
+                --clamp_max 0.020 \
+                --delta_curriculum_frac 0.0 \
+                --pos_weight_boost 0.0 \
+                --delta_diversity_weight 0.0 \
+                --frg_separation_weight 0.0 \
+                --probe_loss_weight 0.0 \
+                --frg_sep_every 999999 \
+                --frg_every_n_eval 999999 \
+                --frg_n_samples 50 \
+                --frg_max_new_tokens 48 \
+                --frg_labels_file "${GOEMO_LABELS}" \
+                --frg_final_eval 1 \
+                --frg_sent_model goemo \
+                --frg_final_n_users 10 \
+                --frg_final_max_tokens 96 \
+                --emit_both \
+                --models_output_dir "${MDIR}" \
+              >> "${LFILE}" 2>&1
+              RC=$?
+
+              kill "$WD_PID" 2>/dev/null || true
+              wait "$WD_PID" 2>/dev/null || true
+
+              echo "[M1-pythia] Training exited with code ${RC} at $(date -Is)"
+              ls -lh "${MDIR}" || true
+
+              if (( RC != 0 )); then
+                echo "[M1-pythia] FAILED (rc=${RC})."
+                if [[ "$RC" -eq 143 || "$RC" -eq 130 ]]; then
+                  if [[ -n "${PREEMPT_FILE:-}" && -f "${PREEMPT_FILE}" ]]; then
+                    echo "[M1-pythia] Preempted. Re-deploy this YAML to resume."
+                    exit 0
+                  fi
+                fi
+                exit "$RC"
+              fi
+
+              echo "[M1-pythia] DONE."
+
+              kill "$TELEM_PID" 2>/dev/null || true

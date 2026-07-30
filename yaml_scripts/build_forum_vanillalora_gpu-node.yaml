@@ -1,0 +1,253 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: build-forum-vanillalora-gpu-node
+  namespace: default
+spec:
+  activeDeadlineSeconds: 259200
+  ttlSecondsAfterFinished: 1800
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: build-forum-vanillalora-gpu-node
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 600
+
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          value: "gpu-node"
+          effect: "NoSchedule"
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - ANON-HIGHMEM-ACCELERATOR
+
+      volumes:
+        - name: home-vol
+          nfs:
+            server: 10.0.0.1
+            path: /workspace
+        - name: data10-vol
+          nfs:
+            server: 10.0.0.2
+            path: /data
+        - name: tmp-vol
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "48Gi"
+        - name: progress
+          nfs:
+            server: 10.0.0.2
+            path: /data/shared/k8s_progress_logs
+
+      containers:
+        - name: build-forum-vanillalora-gpu-node
+          image: ghcr.io/anonymous/hypernets-pip-slim:v19-arm64
+          imagePullPolicy: Always
+          terminationMessagePolicy: FallbackToLogsOnError
+
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "480Gi"
+              cpu: "23"
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "256Gi"
+              cpu: "23"
+
+          volumeMounts:
+            - name: home-vol
+              mountPath: /workspace
+            - name: data10-vol
+              mountPath: /data
+            - name: tmp-vol
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+            - name: progress
+              mountPath: /progress
+
+          env:
+            - name: TZ
+              value: "EST5EDT,M3.2.0,M11.1.0/2"
+            - name: UCX_HANDLE_ERRORS
+              value: "bt"
+            - name: UCX_ERROR_SIGNALS
+              value: "SIGILL,SIGSEGV,SIGBUS,SIGFPE"
+            - name: UCX_LOG_LEVEL
+              value: "error"
+            - name: PYTHONFAULTHANDLER
+              value: "1"
+            - name: CUDA_LAUNCH_BLOCKING
+              value: "0"
+            - name: CUDA_MODULE_LOADING
+              value: "EAGER"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+            - name: HF_HOME
+              value: /tmp/hf
+            - name: HUGGINGFACE_HUB_CACHE
+              value: /tmp/hf/hub
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/hf/transformers
+            - name: HF_DATASETS_CACHE
+              value: /tmp/hf/datasets
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True,max_split_size_mb:512"
+            - name: PYTHONPATH
+              value: "/workspace/hypernets/data_scripts:/workspace/hypernets/training_scripts"
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+            - name: PYTHONWARNINGS
+              value: "ignore"
+            - name: HF_HUB_OFFLINE
+              value: "0"
+            - name: TRANSFORMERS_OFFLINE
+              value: "0"
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+            - name: TRANSFORMERS_VERBOSITY
+              value: "error"
+            - name: HN_USE_UNIFIED_MEMORY
+              value: "1"
+
+          workingDir: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -Eeuo pipefail
+              set -x
+              umask 0002
+
+              echo 0 > /proc/sys/kernel/numa_balancing 2>/dev/null || true
+
+              mkdir -p /tmp/.cache /tmp/hf/hub /tmp/hf/transformers /tmp/hf/datasets
+              mkdir -p /workspace/hypernets/sims/vanillalora_gpu-node/rage
+              mkdir -p /workspace/hypernets/sims/vanillalora_gpu-node/empath
+              mkdir -p /workspace/hypernets/sims/vanillalora_gpu-node/neutral
+              mkdir -p /workspace/hypernets/log_files
+
+              if [[ -f /workspace/hypernets/HF_TOKEN.txt ]]; then
+                CLEAN_TOKEN="$(tr -d '[:space:]' < /workspace/hypernets/HF_TOKEN.txt)"
+                if [[ -n "$CLEAN_TOKEN" ]]; then
+                  export HF_TOKEN="$CLEAN_TOKEN"
+                  export HUGGINGFACEHUB_API_TOKEN="$CLEAN_TOKEN"
+                  export HUGGINGFACE_HUB_TOKEN="$CLEAN_TOKEN"
+                fi
+              fi
+
+              echo "GPU inventory:"
+              nvidia-smi -L || true
+              nvidia-smi || true
+
+              [[ -f /venv/bin/activate ]] && source /venv/bin/activate || true
+              python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available()); print('device', torch.cuda.get_device_name(0)) if torch.cuda.is_available() else None" || true
+
+              echo "Stage inputs to /tmp..."
+              for f in author_static_10000.parquet global_features_10000.parquet labels_sentiment_goemo.csv; do
+                if [[ -f "/workspace/hypernets/data/${f}" ]]; then
+                  cp -a "/workspace/hypernets/data/${f}" "/tmp/${f}"
+                fi
+              done
+              ls -lh /tmp/*.parquet /tmp/*.csv || true
+
+              # ── Vanilla LoRA baseline (no hypernet) on the GPU node ──────
+              # Override LORA_DIR via env to point at a different vanilla LoRA
+              # checkpoint (e.g., a paired vanilla baseline once trained).
+              BASE_MODEL="EleutherAI/pythia-1.4b"
+              LORA_DIR="${LORA_DIR:-/workspace/hypernets/models/vanillalora_phaseA_v5}"
+              SIM_BASE="/workspace/hypernets/sims/vanillalora_gpu-node"
+              LOG_BASE="/workspace/hypernets/log_files"
+              SCRIPT="/workspace/hypernets/training_scripts/build_vanillalora_forum.py"
+
+              # Common args (drop --qlora vs standard GPU; BF16 base on high-memory GPU unified pool).
+              # Uses GoEmo labels for cohort assignment.
+              COMMON_ARGS=(
+                --author_parquet /tmp/author_static_10000.parquet
+                --labels_csv /tmp/labels_sentiment_goemo.csv
+                --base_model "${BASE_MODEL}"
+                --online
+                --lora_dir "${LORA_DIR}"
+                --use_best_ckpt
+                --threads_from_default 12
+                --fanout 5 5 3 1
+                --horizon_min 1080
+                --n_rage 500
+                --n_empath 500
+                --max_len 512
+                --max_new_tokens 192
+                --do_sample
+                --top_p 0.90
+                --temperature 0.70
+                --repetition_penalty 1.10
+                --seed 142
+              )
+
+              {
+                echo "Run vanilla LoRA forum simulation for rage-leaning topic (the GPU node)..."
+                python "${SCRIPT}" "${COMMON_ARGS[@]}" \
+                  --out_dir "${SIM_BASE}/rage" \
+                  --topic "unpopular opinions you actually believe — things most people won't say out loud" \
+                  --sentiment_target rage
+              } 2>&1 | tee "${LOG_BASE}/build_vanillalora_forum_gpu-node_rage_$(date +%Y%m%d_%H%M%S).log"
+
+              {
+                echo "Run vanilla LoRA forum simulation for empathic topic (the GPU node)..."
+                python "${SCRIPT}" "${COMMON_ARGS[@]}" \
+                  --out_dir "${SIM_BASE}/empath" \
+                  --topic "what's a piece of advice someone gave you that actually stuck with you?" \
+                  --sentiment_target empath
+              } 2>&1 | tee "${LOG_BASE}/build_vanillalora_forum_gpu-node_empath_$(date +%Y%m%d_%H%M%S).log"
+
+              {
+                echo "Run vanilla LoRA forum simulation for neutral topic (the GPU node)..."
+                python "${SCRIPT}" "${COMMON_ARGS[@]}" \
+                  --out_dir "${SIM_BASE}/neutral" \
+                  --topic "what hobby or interest do you wish you had gotten into sooner?" \
+                  --sentiment_target neutral
+              } 2>&1 | tee "${LOG_BASE}/build_vanillalora_forum_gpu-node_neutral_$(date +%Y%m%d_%H%M%S).log"
+
+              # ── Score all runs with GoEmo backend ────────────────────
+              SCORE_COMMON="--threshold_source /tmp/global_features_10000.parquet --threshold_col gstat_user_sent_mean --device_id 0 --pipe_batch_size 256"
+
+              for tag in rage empath neutral; do
+                echo "===== Scoring: vanilla LoRA gpu-node ${tag} ====="
+                python /workspace/hypernets/training_scripts/score_hyperlora_forum_sentiment.py \
+                  --input_parquet "${SIM_BASE}/${tag}/forum.parquet" \
+                  --out_dir "${SIM_BASE}/${tag}" \
+                  ${SCORE_COMMON} \
+                  2>&1 | tee -a "${LOG_BASE}/build_vanillalora_forum_gpu-node_${tag}_score.log"
+              done
+
+              echo "the GPU node vanilla LoRA forum simulation completed."
+              ls -lh "${SIM_BASE}" || true
+              for tag in rage empath neutral; do
+                ls -lh "${SIM_BASE}/${tag}" || true
+              done

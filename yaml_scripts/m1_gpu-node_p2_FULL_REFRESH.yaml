@@ -1,0 +1,275 @@
+# ===========================================================================
+# m1_gpu-node_p2_FULL_REFRESH.yaml
+# Paper 2 comprehensive ground-up refresh — the GPU node high-memory GPU single-node job.
+#
+# SUPERSEDES:
+#   m1_gpu-node_p2_arditi.yaml   (prior production eval pipeline)
+#   m1_stdgpu_p2_regen.yaml         (far-from-hull v2 + midpoint regen only)
+#
+# Scope:
+#   All 15 forums regenerated from scratch under phase2_forums_REFRESH/.
+#   Conditions: 2a_vanilla (3) + 2b_zero_delta (3) + 2c_real_user (3) +
+#     2d_synth_in_hull (3) + 2d_synth_near_hull (3) +
+#     2d_synth_far_from_hull (3) + 2d_synth_midpoint_baseline (3) = 21 total
+#     phase-2 forum generation runs, of which 15 are the canonical paper cells.
+#   Plus: phase3a scoring (15), phase3d persona-signature (15),
+#         optional phase4 layerwise (gate RUN_PHASE4=1),
+#         phase5 paper-fill analysis, phase6 extended-depth 80-turn audit.
+#
+# Artifact-fix rationale (2026-05-13):
+#   7-58% of all HyperPEFT-LoRA-conditioned cell replies leaked Pile artifacts
+#   (leading dots, tildes, hashes, equals bars, email headers, Reply markers).
+#   build_hyperlora_forum.py postprocess fix landed 2026-05-13. All hyperlora-
+#   conditioned cells must be regenerated. Vanilla (2a) was clean; still
+#   regenerated for a fresh timestamp baseline.
+#
+# New strata (v2):
+#   far_from_hull_v3  : kappa=10 true extrapolation (alpha=10.0, n_per_cohort=1000)
+#     descriptor parquet: phase1_synth_arditi_v3/synthetic_personas.parquet
+#     (kappa=3 was too close to the hull: ~30% outside 2D PCA hull. Moved to
+#     kappa=10 so the off-manifold cell is solidly past the manifold edge in
+#     both 18-D Mahalanobis and 2D PCA terms.)
+#     label parquet:      phase1p5_label_v2_farhull/synthetic_personas_labeled.parquet (EXISTS)
+#   midpoint_baseline : Item 17 interpolation ablation
+#     descriptor parquet: phase1_midpoint_baseline_v2/synthetic_personas.parquet (EXISTS)
+#     label parquet:      phase1p5_label_v2_midpoint/synthetic_personas_labeled.parquet (EXISTS)
+#   BOTH labeled parquets verified 3000 rows with cohort_goemo populated.
+#
+# Legacy far_from_hull DROPPED — PCA-axis 1.5sigma sampler was bogus.
+#   phase2d_synth_{cohort}_far_from_hull in new REFRESH root = v2 data.
+#
+# Arditi directions:
+#   Reused from phase0b_arditi_directions_arditi/ (project_arditi_extract_highmem_hang).
+#   Extraction SKIPPED. Directions pre-staged unconditionally on every pod start.
+#
+# Inference parameters (PRE-REG LOCKED — DO NOT CHANGE):
+#   inject_clamp=0.020  delta_gain=8.0  max_new_tokens=192  temperature=0.40
+#   top_p=0.85  repetition_penalty=1.25  no_repeat_ngram_size=4  min_new_tokens=30
+#   lora_r=24  lora_alpha=48.0  fanout=5,5,3,1  horizon_min=1080
+#   n_rage=500  n_empath=500  arditi_mode=orthogonal  arditi_alpha=1.0
+#   arditi_layers=15-23
+#
+# Outlier flags:
+#   2a/2b/2c/in_hull/near_hull: --feature_clamp 3.0 --outlier_threshold 4.0 --filter_outliers
+#   far_from_hull_v2 + midpoint: --feature_clamp 5.0 --outlier_threshold 50.0  (NO --filter_outliers)
+#
+# --no_qlora: ONLY on build_vanillalora_forum.py (required; the GPU node has no bnb binary).
+#             NEVER on build_hyperlora_forum.py (flag does not exist there).
+#
+# Output root: /data/hypernets/results/paper_2_m1
+# All REFRESH outputs live under *_REFRESH/ dirs alongside legacy *_arditi/ dirs.
+#
+# POST-COMPLETION FOLLOW-UP (not a script change — do this manually after job completes):
+#   Repoint make_paper2_figures.py PHASE3D and PHASE5 constants from:
+#     phase2_forums_arditi/ -> phase2_forums_REFRESH/
+#     phase3d_persona_signature_arditi/ -> phase3d_persona_signature_REFRESH/
+#     phase5_paper_fill_arditi/ -> phase5_paper_fill_REFRESH/
+#   This is intentionally deferred so legacy outputs remain readable during the run.
+#
+# K8s commands (user must run from yaml_scripts/):
+#   Previously killed (2026-05-13, before this version):
+#     # kubectl delete job m1-stdgpu-p2-regen -n default   (already killed)
+#     # kubectl delete job m1-gpu-node-p3 -n default     (already killed)
+#   Nothing to kill now. state file phase_state_FULL_REFRESH.json will be
+#   created fresh on first pod start (phase_state_init helper handles missing
+#   file — see below). The previous state was wiped manually on 2026-05-13
+#   before this version was applied.
+#   Launch:
+#     kubectl apply -f m1_gpu-node_p2_FULL_REFRESH.yaml -n default
+#   Monitor:
+#     kubectl get pods -n default -l app=m1-gpu-node-p2-full-refresh
+#     kubectl logs <pod-name> -n default --tail=200 -f
+# ===========================================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: m1-gpu-node-p2-full-refresh
+  namespace: default
+spec:
+  activeDeadlineSeconds: 777600   # 9 days — 15 forums + scoring + phase6 80-turn
+  ttlSecondsAfterFinished: 7200
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: m1-gpu-node-p2-full-refresh
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 600
+
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          value: "gpu-node"
+          effect: "NoSchedule"
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - ANON-HIGHMEM-ACCELERATOR
+
+      volumes:
+        - name: home-vol
+          nfs:
+            server: 10.0.0.1
+            path: /workspace
+        - name: data10-vol
+          nfs:
+            server: 10.0.0.2
+            path: /data
+        - name: tmp-vol
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "32Gi"
+        - name: progress
+          nfs:
+            server: 10.0.0.2
+            path: /data/shared/k8s_progress_logs
+
+      containers:
+        - name: m1-p2-full-refresh
+          image: ghcr.io/anonymous/hypernets-pip-slim:v19-arm64
+          imagePullPolicy: Always
+          terminationMessagePolicy: FallbackToLogsOnError
+
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "256Gi"
+              cpu: "16"
+              ephemeral-storage: "60Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "480Gi"
+              cpu: "23"
+              ephemeral-storage: "120Gi"
+
+          volumeMounts:
+            - name: home-vol
+              mountPath: /workspace
+            - name: data10-vol
+              mountPath: /data
+            - name: tmp-vol
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+            - name: progress
+              mountPath: /progress
+
+          env:
+            - name: TZ
+              value: "EST5EDT,M3.2.0,M11.1.0/2"
+            - name: UCX_HANDLE_ERRORS
+              value: "bt"
+            - name: UCX_ERROR_SIGNALS
+              value: "SIGILL,SIGSEGV,SIGBUS,SIGFPE"
+            - name: UCX_LOG_LEVEL
+              value: "error"
+            - name: PYTHONFAULTHANDLER
+              value: "1"
+            - name: CUDA_LAUNCH_BLOCKING
+              value: "0"
+            - name: CUDA_MODULE_LOADING
+              value: "EAGER"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+            # HF cache routes to data10 (not /tmp) per post-2026-04-21 quota policy.
+            - name: HF_HOME
+              value: /data/.cache/huggingface
+            - name: HUGGINGFACE_HUB_CACHE
+              value: /data/.cache/huggingface/hub
+            - name: TRANSFORMERS_CACHE
+              value: /data/.cache/huggingface/transformers
+            - name: HF_DATASETS_CACHE
+              value: /data/.cache/huggingface/datasets
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "true"
+            - name: OMP_NUM_THREADS
+              value: "16"
+            - name: MKL_NUM_THREADS
+              value: "16"
+            - name: OPENBLAS_NUM_THREADS
+              value: "16"
+            - name: NUMEXPR_NUM_THREADS
+              value: "16"
+            - name: HN_DATALOADER_NUM_WORKERS
+              value: "16"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True,max_split_size_mb:128"
+            # RMM unified memory allocator (required for high-memory GPU — without this,
+            # GPU util stays at ~9% and throughput is 5+ min/step).
+            # HN_USE_UNIFIED_MEMORY=1 must be read by the script BEFORE import torch.
+            # Late init crashes with "Can't swap an already initialized allocator."
+            - name: HN_USE_UNIFIED_MEMORY
+              value: "1"
+            # high-memory GPU cuDNN 9.x SDPA planner workaround (see arditi yaml comment).
+            # Disables the cudnn_frontend planner that caused "No valid execution
+            # plans built" in phase 2c_real_user_empath on 2026-05-03.
+            - name: CUDNN_FRONTEND_ATTN_DP_WORKSPACE_LIMIT
+              value: "0"
+            - name: TORCH_CUDNN_SDPA_ENABLED
+              value: "0"
+            # torch.compile is INCOMPATIBLE with RMM on high-memory GPU.
+            # Do NOT re-enable torch.compile in any the GPU node YAML.
+            - name: CUDA_MPS_PIPE_DIRECTORY
+              value: "/tmp/nvidia-mps"
+            - name: CUDA_MPS_LOG_DIRECTORY
+              value: "/tmp/nvidia-mps-log"
+            - name: NCCL_DEBUG
+              value: "WARN"
+            - name: TORCH_DISTRIBUTED_DEBUG
+              value: "OFF"
+            - name: PYTHONPATH
+              value: "/workspace/hypernets/data_scripts:/workspace/hypernets/training_scripts"
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+            - name: PYTHONWARNINGS
+              value: "ignore"
+            - name: HF_HUB_OFFLINE
+              value: "0"
+            - name: TRANSFORMERS_OFFLINE
+              value: "0"
+            # Phase 4 layerwise hidden-state probe is OFF by default
+            # (RUN_PHASE4=0) because it is Paper 5 evaluation territory
+            # (XAI / mechanistic interpretability of the hypernetwork),
+            # NOT Paper 2. Paper 2 evaluates synthesis via forums,
+            # persona signature, PSI, Arditi patch ablation, and the
+            # extended-depth drift audit; there are zero references to
+            # layerwise probes anywhere in paper2.tex. The phase block
+            # below is kept as future-Paper-5 scaffolding only.
+            # Override with kubectl set env job/m1-gpu-node-p2-full-refresh
+            #   RUN_PHASE4=1 if you need it for ad-hoc Paper 5 work.
+            - name: RUN_PHASE4
+              value: "0"
+            # Phase 0d arditi extreme re-eval is ON by default (RUN_PHASE0D=1).
+            # Set to "0" to skip the extreme-prompt red-team re-run.
+            - name: RUN_PHASE0D
+              value: "1"
+
+          workingDir: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -Eeuo pipefail
+              # Body script externalized 2026-05-19 to avoid ARG_MAX overflow
+              # (inline form was 171KB, kernel exec limit is 128KB).
+              exec /bin/bash /workspace/hypernets/yaml_scripts/m1_gpu-node_p2_FULL_REFRESH_BODY.sh

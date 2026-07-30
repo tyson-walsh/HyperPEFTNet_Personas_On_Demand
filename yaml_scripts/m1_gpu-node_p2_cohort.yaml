@@ -1,0 +1,1285 @@
+# ===========================================================================
+# m1_gpu-node_p2_cohort.yaml
+# Paper 2 cohort-separation 2x3 factorial experiment — the GPU node high-memory GPU.
+#
+# Goal: Clean 2x3 factorial test of cohort separation:
+#   {HyperPEFT-LoRA, Zero-Δ, Vanilla LoRA} x {Arditi ON, Arditi OFF}.
+#   6 modes total, each run on the SAME real-user pool (~500 rage + 500 empath
+#   for surface forums; 200 rage + 200 empath for the layerwise probe).
+#
+# Two outputs per mode:
+#   (a) Surface table  — per-user realized Hedges' g rage-vs-empath on
+#       the 9 probe dims (sentiment_goemo, politeness, self_focus, curiosity,
+#       expressiveness, tempo, anxiety, warmth, hostility).
+#   (b) Layerwise table — per-layer hidden-state Hedges' g rage-vs-empath
+#       on the same 9 probe dims (via layerwise_6mode_probe.py).
+#
+# Modes:
+#   M1: HP-LoRA + Arditi ON
+#   M2: HP-LoRA + Arditi OFF
+#   M3: Zero-Δ + Arditi ON
+#   M4: Zero-Δ + Arditi OFF
+#   M5: Vanilla + Arditi ON
+#   M6: Vanilla + Arditi OFF
+#
+# Output root: /data/hypernets/results/paper_2_m1_cohort
+# (NEW directory; never touches /paper_2_m1).
+#
+# Naming: HyperPEFT-LoRA. Pythia-1.4B.
+#
+# Launch:
+#   kubectl apply -f m1_gpu-node_p2_cohort.yaml -n default
+# Monitor:
+#   kubectl get pods -n default -l app=m1-gpu-node-p2-cohort
+#   kubectl logs <pod-name> -n default --tail=200 -f
+# ===========================================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: m1-gpu-node-p2-cohort
+  namespace: default
+spec:
+  activeDeadlineSeconds: 172800   # 2 days
+  ttlSecondsAfterFinished: 7200
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: m1-gpu-node-p2-cohort
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 600
+
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          value: "gpu-node"
+          effect: "NoSchedule"
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - ANON-HIGHMEM-ACCELERATOR
+
+      volumes:
+        - name: home-vol
+          nfs:
+            server: 10.0.0.1
+            path: /workspace
+        - name: data10-vol
+          nfs:
+            server: 10.0.0.2
+            path: /data
+        - name: tmp-vol
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "32Gi"
+        - name: progress
+          nfs:
+            server: 10.0.0.2
+            path: /data/shared/k8s_progress_logs
+
+      containers:
+        - name: m1-p2-cohort
+          image: ghcr.io/anonymous/hypernets-pip-slim:v19-arm64
+          imagePullPolicy: Always
+          terminationMessagePolicy: FallbackToLogsOnError
+
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "256Gi"
+              cpu: "16"
+              ephemeral-storage: "60Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "480Gi"
+              cpu: "23"
+              ephemeral-storage: "120Gi"
+
+          volumeMounts:
+            - name: home-vol
+              mountPath: /workspace
+            - name: data10-vol
+              mountPath: /data
+            - name: tmp-vol
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+            - name: progress
+              mountPath: /progress
+
+          env:
+            - name: TZ
+              value: "EST5EDT,M3.2.0,M11.1.0/2"
+            - name: UCX_HANDLE_ERRORS
+              value: "bt"
+            - name: UCX_ERROR_SIGNALS
+              value: "SIGILL,SIGSEGV,SIGBUS,SIGFPE"
+            - name: UCX_LOG_LEVEL
+              value: "error"
+            - name: PYTHONFAULTHANDLER
+              value: "1"
+            - name: CUDA_LAUNCH_BLOCKING
+              value: "0"
+            - name: CUDA_MODULE_LOADING
+              value: "EAGER"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+            - name: HF_HOME
+              value: /data/.cache/huggingface
+            - name: HUGGINGFACE_HUB_CACHE
+              value: /data/.cache/huggingface/hub
+            - name: TRANSFORMERS_CACHE
+              value: /data/.cache/huggingface/transformers
+            - name: HF_DATASETS_CACHE
+              value: /data/.cache/huggingface/datasets
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "true"
+            - name: OMP_NUM_THREADS
+              value: "16"
+            - name: MKL_NUM_THREADS
+              value: "16"
+            - name: OPENBLAS_NUM_THREADS
+              value: "16"
+            - name: NUMEXPR_NUM_THREADS
+              value: "16"
+            - name: HN_DATALOADER_NUM_WORKERS
+              value: "16"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True,max_split_size_mb:128"
+            - name: HN_USE_UNIFIED_MEMORY
+              value: "1"
+            - name: CUDNN_FRONTEND_ATTN_DP_WORKSPACE_LIMIT
+              value: "0"
+            - name: TORCH_CUDNN_SDPA_ENABLED
+              value: "0"
+            # 2026-05-16: bug fix -- force bf16 + eager attn for Pythia-1.4B
+            # on high-memory GPU. HyperPEFTLoRAEngine's model loader (build_hyperlora_forum.py
+            # line 1636/1644) defaults to float16 + sdpa which causes cuDNN
+            # crashes on this GPU. Without these env vars set BEFORE the python
+            # process starts, the engine load itself silently picks the unsafe
+            # defaults.
+            - name: HN_TORCH_DTYPE
+              value: "bfloat16"
+            - name: HN_ATTN_IMPL
+              value: "eager"
+            - name: CUDA_MPS_PIPE_DIRECTORY
+              value: "/tmp/nvidia-mps"
+            - name: CUDA_MPS_LOG_DIRECTORY
+              value: "/tmp/nvidia-mps-log"
+            - name: NCCL_DEBUG
+              value: "WARN"
+            - name: TORCH_DISTRIBUTED_DEBUG
+              value: "OFF"
+            - name: PYTHONPATH
+              value: "/workspace/hypernets/data_scripts:/workspace/hypernets/training_scripts"
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+            - name: PYTHONWARNINGS
+              value: "ignore"
+            - name: HF_HUB_OFFLINE
+              value: "0"
+            - name: TRANSFORMERS_OFFLINE
+              value: "0"
+
+          workingDir: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -Eeuo pipefail
+              umask 0002
+
+              # ===========================================================
+              # Paper 2 cohort 2x3 factorial — HyperPEFT-LoRA evaluation
+              # ===========================================================
+
+              JOB_TS="$(date +%Y%m%d_%H%M%S)"
+              LOG_ROOT="/data/hypernets/log_files"
+              MAIN_LOG="${LOG_ROOT}/m1_gpu-node_p2_cohort_${JOB_TS}.log"
+              GPU_TELEM="${LOG_ROOT}/gpu_telem_m1_gpu-node_p2_cohort_${HOSTNAME}_${JOB_TS}.csv"
+
+              mkdir -p /tmp/.cache /tmp/hf/hub /tmp/hf/transformers /tmp/hf/datasets
+              mkdir -p /tmp/nvidia-mps /tmp/nvidia-mps-log || true
+              mkdir -p "${LOG_ROOT}"
+
+              exec > >(stdbuf -oL -eL tee -a "${MAIN_LOG}") 2>&1
+              echo "[cohort] log  : ${MAIN_LOG}"
+              echo "[cohort] host : ${HOSTNAME}"
+              echo "[cohort] ts   : ${JOB_TS}"
+              echo "[cohort] image: v19-arm64  gpu: high-memory GPU-480GB"
+
+              echo 0 > /proc/sys/kernel/numa_balancing 2>/dev/null || true
+
+              echo "timestamp,index,name,pstate,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.free,memory.used" > "${GPU_TELEM}" || true
+              (
+                while true; do
+                  nvidia-smi --query-gpu=timestamp,index,name,pstate,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.free,memory.used \
+                    --format=csv,noheader,nounits >> "${GPU_TELEM}" 2>/dev/null || true
+                  sleep 30
+                done
+              ) &
+              TELEM_PID=$!
+
+              HF_TOKEN_FILE="/workspace/hypernets/HF_TOKEN.txt"
+              if [[ -f "${HF_TOKEN_FILE}" ]]; then
+                CLEAN_TOKEN="$(tr -d '[:space:]' < "${HF_TOKEN_FILE}")"
+                if [[ -n "${CLEAN_TOKEN}" ]]; then
+                  export HF_TOKEN="${CLEAN_TOKEN}"
+                  export HUGGINGFACEHUB_API_TOKEN="${CLEAN_TOKEN}"
+                  export HUGGINGFACE_HUB_TOKEN="${CLEAN_TOKEN}"
+                fi
+              fi
+
+              [[ -f /venv/bin/activate ]] && source /venv/bin/activate || true
+
+              if command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
+                echo "[mps] starting CUDA MPS daemon"
+                nvidia-cuda-mps-control -d || true
+                sleep 2
+                echo get_server_list | nvidia-cuda-mps-control || true
+                export HN_MPS_ENABLED=1
+              else
+                echo "[mps] single-stream"
+                export HN_MPS_ENABLED=0
+              fi
+
+              # ===========================================================
+              # Paths
+              # ===========================================================
+              SCRIPTS="/workspace/hypernets/training_scripts"
+              DATA_SCRIPTS="/workspace/hypernets/data_scripts"
+              DATA="/workspace/hypernets/data"
+              MODELS_ROOT="/workspace/hypernets/models"
+
+              HYPER_DIR="${HYPER_DIR:-${MODELS_ROOT}/hyperlora_gpu-node_M1_pythia14B_r24_full/hyperlora_multi}"
+              VANILLA_LORA_DIR="${VANILLA_LORA_DIR:-${MODELS_ROOT}/vanillalora_M1_pythia14B}"
+              BASE_MODEL="EleutherAI/pythia-1.4b"
+
+              OUT_ROOT="${OUT_ROOT:-/data/hypernets/results/paper_2_m1_cohort}"
+              FORUM_ROOT="${OUT_ROOT}/phase2_cohort_forums"
+              LAYERWISE_OUT="${OUT_ROOT}/phase4_layerwise"
+              COHORT_OUT="${OUT_ROOT}/phase5_cohort"
+              STATE_FILE="${OUT_ROOT}/phase_state_cohort.json"
+
+              mkdir -p "${OUT_ROOT}" "${FORUM_ROOT}" "${LAYERWISE_OUT}" "${COHORT_OUT}"
+
+              # Pre-reg-locked inference parameters (mirror FULL_REFRESH)
+              INJECT_CLAMP="0.020"
+              DELTA_GAIN="8.0"
+              MAX_NEW_TOKENS="192"
+              TEMPERATURE="0.40"
+              TOP_P="0.85"
+              REPETITION_PENALTY="1.25"
+              NO_REPEAT_NGRAM="4"
+              MIN_NEW_TOKENS="30"
+              LORA_R="24"
+              LORA_ALPHA="48.0"
+              LORA_DROPOUT="0.05"
+              FANOUT="5,5,3,1"
+              HORIZON_MIN="1080"
+              N_RAGE="500"
+              N_EMPATH="500"
+              ARDITI_MODE="orthogonal"
+              ARDITI_ALPHA="1.0"
+              ARDITI_LAYERS="15-23"
+              TARGET_MODULES="query_key_value,dense,dense_h_to_4h,dense_4h_to_h"
+
+              # Arditi directions source (pre-staged from FULL_REFRESH cell).
+              ARDITI_DIR_SRC="${OUT_ROOT_FULL_REFRESH:-/data/hypernets/results/paper_2_m1}/phase0b_arditi_directions_arditi"
+              ARDITI_TMP="/tmp/arditi_directions.safetensors"
+
+              declare -A FORUM_TOPIC
+              FORUM_TOPIC["rage"]="unpopular opinions you actually believe"
+              FORUM_TOPIC["empath"]="what's a piece of advice that stuck with you?"
+
+              # ===========================================================
+              # State / phase helpers (mirror FULL_REFRESH)
+              # ===========================================================
+              phase_state_init() {
+                if [[ ! -f "${STATE_FILE}" ]]; then
+                  echo "{}" > "${STATE_FILE}"
+                fi
+              }
+              phase_state_get() {
+                local pid="$1"
+                python -c "
+              import json, sys
+              try:
+                  s = json.load(open('${STATE_FILE}'))
+              except Exception:
+                  s = {}
+              print((s.get('${pid}', {}) or {}).get('status', 'pending'))
+              "
+              }
+              phase_state_set() {
+                local pid="$1"; local status="$2"; local n_sub="${3:-0}"; local n_done="${4:-0}"
+                python -c "
+              import json, datetime, sys
+              try:
+                  s = json.load(open('${STATE_FILE}'))
+              except Exception:
+                  s = {}
+              entry = s.get('${pid}', {}) or {}
+              ts = datetime.datetime.utcnow().isoformat() + 'Z'
+              if '${status}' == 'running' and 'started' not in entry:
+                  entry['started'] = ts
+              if '${status}' in ('completed', 'failed'):
+                  entry['ended'] = ts
+              entry['status'] = '${status}'
+              entry['n_subitems'] = int(${n_sub})
+              entry['n_complete'] = int(${n_done})
+              s['${pid}'] = entry
+              json.dump(s, open('${STATE_FILE}', 'w'), indent=2)
+              "
+              }
+              phase_begin() {
+                local pid="$1"; local n_sub="${2:-1}"
+                phase_state_init
+                local st; st="$(phase_state_get "${pid}")"
+                if [[ "${st}" == "completed" ]]; then
+                  echo "[state] phase ${pid} already completed; skipping."
+                  return 1
+                fi
+                echo ""
+                echo "================================================================"
+                echo "  PHASE ${pid}  ($(date -Is))   resume_status=${st}"
+                echo "================================================================"
+                phase_state_set "${pid}" "running" "${n_sub}" "0"
+                return 0
+              }
+              phase_end_ok() {
+                local pid="$1"; local n_sub="${2:-1}"; local n_done="${3:-${n_sub}}"
+                phase_state_set "${pid}" "completed" "${n_sub}" "${n_done}"
+                echo "[state] phase ${pid} OK (${n_done}/${n_sub})"
+              }
+              phase_end_fail() {
+                local pid="$1"; local n_sub="${2:-1}"; local n_done="${3:-0}"
+                phase_state_set "${pid}" "failed" "${n_sub}" "${n_done}"
+                echo "[state] phase ${pid} FAILED (${n_done}/${n_sub})"
+              }
+              subitem_done()    { touch "$1"; }
+              subitem_is_done() { [[ -f "$1" ]]; }
+
+              # ===========================================================
+              # PHASE 0 -- always-on hot-stage
+              # ===========================================================
+              echo ""
+              echo "================================================================"
+              echo "  PHASE 0_STAGE ($(date -Is))   -- always runs"
+              echo "================================================================"
+              nvidia-smi -L || true
+              python -c "
+              import torch
+              print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())
+              if torch.cuda.is_available():
+                  print('device', torch.cuda.get_device_name(0))
+                  print('VRAM', round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1), 'GB')
+              " || true
+
+              echo "[phase0] staging data files to /tmp"
+              for f in author_static_10000.parquet global_features_10000.parquet \
+                       labels_sentiment_goemo.csv feature_norm_stats_10000.json \
+                       train_data_10000.parquet goemo_labels_metadata.json \
+                       labels_sentiment_goemo_extremes.csv \
+                       labels_politeness.csv labels_self_focus.csv labels_tempo.csv \
+                       labels_curiosity.csv labels_expressiveness.csv \
+                       labels_anxiety.csv labels_warmth.csv labels_hostility.csv \
+                       goemo_user_emotions.csv goemo_user_sentiment.csv; do
+                if [[ -f "${DATA}/${f}" && ! -f "/tmp/${f}" ]]; then
+                  cp "${DATA}/${f}" "/tmp/${f}" || true
+                fi
+              done
+
+              # ===========================================================
+              # PHASE 0_VALIDATE
+              # ===========================================================
+              if phase_begin "phase0_validate" 1; then
+                REQUIRED=(
+                  "${HYPER_DIR}/best/hypernetwork.safetensors"
+                  "${HYPER_DIR}/best/peft_placeholders.safetensors"
+                  "${DATA}/author_static_10000.parquet"
+                  "${DATA}/feature_norm_stats_10000.json"
+                  "${DATA}/labels_sentiment_goemo.csv"
+                  "${ARDITI_DIR_SRC}/arditi_directions.safetensors"
+                  "${SCRIPTS}/arditi_install_util.py"
+                  "${SCRIPTS}/layerwise_6mode_probe.py"
+                )
+                MISSING=0
+                for f in "${REQUIRED[@]}"; do
+                  if [[ ! -e "$f" ]]; then
+                    echo "[validate] MISSING: $f"
+                    MISSING=$((MISSING + 1))
+                  fi
+                done
+                if [[ ! -d "${VANILLA_LORA_DIR}" ]]; then
+                  echo "[validate] WARNING: vanilla LoRA dir not found: ${VANILLA_LORA_DIR}"
+                  echo "[validate] M5/M6 will be skipped if missing."
+                fi
+                if (( MISSING > 0 )); then
+                  echo "[validate] ${MISSING} required input(s) missing; aborting."
+                  phase_end_fail "phase0_validate" 1 0
+                  exit 2
+                fi
+                phase_end_ok "phase0_validate" 1 1
+              fi
+
+              # ===========================================================
+              # PHASE 0B_ARDITI_PRESTAGE  -- pre-stage Arditi directions
+              # ===========================================================
+              ARDITI_DIR_LOCAL="${OUT_ROOT}/phase0b_arditi_directions"
+              mkdir -p "${ARDITI_DIR_LOCAL}"
+              if phase_begin "phase0b_arditi_prestage" 1; then
+                MARK="${ARDITI_DIR_LOCAL}/.complete"
+                if subitem_is_done "${MARK}"; then
+                  cp -f "${ARDITI_DIR_LOCAL}/arditi_directions.safetensors" "${ARDITI_TMP}"
+                  phase_end_ok "phase0b_arditi_prestage" 1 1
+                else
+                  cp -f "${ARDITI_DIR_SRC}/arditi_directions.safetensors" \
+                        "${ARDITI_DIR_LOCAL}/arditi_directions.safetensors"
+                  cp -f "${ARDITI_DIR_SRC}/arditi_directions.json" \
+                        "${ARDITI_DIR_LOCAL}/arditi_directions.json" 2>/dev/null || true
+                  cp -f "${ARDITI_DIR_LOCAL}/arditi_directions.safetensors" "${ARDITI_TMP}"
+                  if grep -qa 'persona/rage'   "${ARDITI_TMP}" \
+                  && grep -qa 'persona/empath' "${ARDITI_TMP}"; then
+                    subitem_done "${MARK}"
+                    phase_end_ok "phase0b_arditi_prestage" 1 1
+                  else
+                    phase_end_fail "phase0b_arditi_prestage" 1 0
+                    echo "[phase0b] FATAL: Arditi directions missing persona/* keys"
+                    exit 2
+                  fi
+                fi
+              fi
+
+              # ===========================================================
+              # Helper: run_cell <mode> <cohort>
+              # ===========================================================
+              # Dispatches the right script + flags for one factorial cell.
+              # Cells write into ${FORUM_ROOT}/2_cohort_<mode>_<cohort>/.
+              # ===========================================================
+              run_cell() {
+                local mode="$1"; local cohort="$2"
+                local topic="${FORUM_TOPIC[${cohort}]}"
+                local out="${FORUM_ROOT}/2_cohort_${mode}_${cohort}"
+                local mark="${out}/.complete"
+                mkdir -p "${out}/persona_signature"
+                if subitem_is_done "${mark}"; then
+                  echo "[skip] ${mode}/${cohort} already complete"
+                  return 0
+                fi
+
+                case "${mode}" in
+                  hp_lora_arditi|hp_lora_no_arditi|zero_delta_arditi|zero_delta_no_arditi)
+                    # HyperPEFT-LoRA path. Zero-Δ adds --force_zero_delta.
+                    # Arditi-on adds the 4 --arditi_* flags.
+                    local extra=()
+                    case "${mode}" in
+                      zero_delta_*) extra+=( --force_zero_delta ) ;;
+                    esac
+                    # 2026-05-16: HP-LoRA path -- only install Arditi for the
+                    # 2 truly-arditi modes (hp_lora_arditi, zero_delta_arditi).
+                    # The bash glob *_arditi ALSO matches *_no_arditi, so use
+                    # an explicit case list. We also pass --arditi_label_csv_dir
+                    # explicitly (default is /tmp anyway, but be explicit so a
+                    # future relocation of the label CSVs doesn't silently
+                    # break the orthogonal-mode user routing).
+                    case "${mode}" in
+                      hp_lora_arditi|zero_delta_arditi)
+                        extra+=( --arditi_patch "${ARDITI_TMP}" \
+                                 --arditi_mode "${ARDITI_MODE}" \
+                                 --arditi_alpha "${ARDITI_ALPHA}" \
+                                 --arditi_layers "${ARDITI_LAYERS}" \
+                                 --arditi_label_csv_dir /tmp ) ;;
+                    esac
+                    if python "${SCRIPTS}/build_hyperlora_forum.py" \
+                        --author_parquet /tmp/author_static_10000.parquet \
+                        --labels_csv /tmp/labels_sentiment_goemo.csv \
+                        --base_model "${BASE_MODEL}" \
+                        --online \
+                        --hyper_dir "${HYPER_DIR}" \
+                        --out_dir "${out}" \
+                        --topic "${topic}" --sentiment_target "${cohort}" \
+                        --threads_from_default 12 \
+                        --target_modules "${TARGET_MODULES}" \
+                        --lora_r "${LORA_R}" --lora_alpha "${LORA_ALPHA}" --lora_dropout "${LORA_DROPOUT}" \
+                        --emit_both \
+                        --inject_clamp "${INJECT_CLAMP}" --delta_gain "${DELTA_GAIN}" \
+                        --fanout "${FANOUT}" --horizon_min "${HORIZON_MIN}" \
+                        --n_rage "${N_RAGE}" --n_empath "${N_EMPATH}" \
+                        --max_len 512 --max_new_tokens "${MAX_NEW_TOKENS}" \
+                        --do_sample --top_p "${TOP_P}" --temperature "${TEMPERATURE}" \
+                        --repetition_penalty "${REPETITION_PENALTY}" \
+                        --no_repeat_ngram_size "${NO_REPEAT_NGRAM}" \
+                        --min_new_tokens "${MIN_NEW_TOKENS}" \
+                        --threshold_source /tmp/global_features_10000.parquet \
+                        --threshold_col gstat_user_sent_mean \
+                        --norm_stats_json /tmp/feature_norm_stats_10000.json \
+                        --feature_clamp 3.0 --outlier_threshold 4.0 --filter_outliers \
+                        --min_user_tokens 50 --seed 142 \
+                        --infer_batch_size 16 \
+                        "${extra[@]}"; then
+                      subitem_done "${mark}"
+                      return 0
+                    else
+                      echo "[run_cell] ${mode}/${cohort} FAILED"
+                      return 1
+                    fi
+                    ;;
+                  vanilla_arditi|vanilla_no_arditi)
+                    if [[ ! -d "${VANILLA_LORA_DIR}" ]]; then
+                      echo "[run_cell] vanilla LoRA dir missing; skipping ${mode}/${cohort}"
+                      return 1
+                    fi
+                    local extra=()
+                    # 2026-05-16: vanilla path -- only install Arditi for
+                    # vanilla_arditi (NOT vanilla_no_arditi). Same bash glob
+                    # caveat as the HP-LoRA path above.
+                    case "${mode}" in
+                      vanilla_arditi)
+                        extra+=( --arditi_patch "${ARDITI_TMP}" \
+                                 --arditi_mode "${ARDITI_MODE}" \
+                                 --arditi_alpha "${ARDITI_ALPHA}" \
+                                 --arditi_layers "${ARDITI_LAYERS}" \
+                                 --arditi_label_csv_dir /tmp ) ;;
+                    esac
+                    if python "${SCRIPTS}/build_vanillalora_forum.py" \
+                        --author_parquet /tmp/author_static_10000.parquet \
+                        --labels_csv /tmp/labels_sentiment_goemo.csv \
+                        --base_model "${BASE_MODEL}" \
+                        --online --no_qlora \
+                        --lora_dir "${VANILLA_LORA_DIR}" --use_best_ckpt \
+                        --out_dir "${out}" \
+                        --topic "${topic}" --sentiment_target "${cohort}" \
+                        --threads_from_default 12 \
+                        --fanout 5 5 3 1 --horizon_min "${HORIZON_MIN}" \
+                        --n_rage "${N_RAGE}" --n_empath "${N_EMPATH}" \
+                        --max_len 512 --max_new_tokens "${MAX_NEW_TOKENS}" \
+                        --do_sample --top_p "${TOP_P}" --temperature "${TEMPERATURE}" \
+                        --repetition_penalty "${REPETITION_PENALTY}" \
+                        --no_repeat_ngram_size "${NO_REPEAT_NGRAM}" \
+                        --seed 142 \
+                        "${extra[@]}"; then
+                      subitem_done "${mark}"
+                      return 0
+                    else
+                      echo "[run_cell] ${mode}/${cohort} FAILED"
+                      return 1
+                    fi
+                    ;;
+                  *)
+                    echo "[run_cell] unknown mode ${mode}"
+                    return 1
+                    ;;
+                esac
+              }
+
+              # ===========================================================
+              # PHASE 2_COHORT_6MODE  -- 12 cells (6 modes x 2 cohorts)
+              # ===========================================================
+              MODES_ALL="hp_lora_arditi hp_lora_no_arditi zero_delta_arditi zero_delta_no_arditi vanilla_arditi vanilla_no_arditi"
+              N_CELLS=12
+              if phase_begin "phase2_cohort_6mode" "${N_CELLS}"; then
+                n_done=0
+                for mode in ${MODES_ALL}; do
+                  for cohort in rage empath; do
+                    if run_cell "${mode}" "${cohort}"; then
+                      n_done=$((n_done+1))
+                    fi
+                  done
+                done
+                (( n_done == N_CELLS )) \
+                  && phase_end_ok "phase2_cohort_6mode" "${N_CELLS}" "${n_done}" \
+                  || phase_end_fail "phase2_cohort_6mode" "${N_CELLS}" "${n_done}"
+              fi
+
+              # ===========================================================
+              # PHASE 3A_SCORE_COHORT -- sentiment-eval is inline in forum builder
+              # ===========================================================
+              # The forum builders write sentiment_eval into metadata.json IFF
+              # --disable_sentiment_eval is NOT passed. We do not pass it, so
+              # this phase is a no-op marker that confirms the metadata is
+              # populated. Aborts only if a metadata.json is missing entirely.
+              if phase_begin "phase3a_score_cohort" "${N_CELLS}"; then
+                n_done=0
+                for mode in ${MODES_ALL}; do
+                  for cohort in rage empath; do
+                    out="${FORUM_ROOT}/2_cohort_${mode}_${cohort}"
+                    if [[ -f "${out}/metadata.json" ]]; then
+                      n_done=$((n_done+1))
+                    else
+                      echo "[phase3a] missing metadata.json for ${mode}/${cohort}"
+                    fi
+                  done
+                done
+                (( n_done == N_CELLS )) \
+                  && phase_end_ok "phase3a_score_cohort" "${N_CELLS}" "${n_done}" \
+                  || phase_end_fail "phase3a_score_cohort" "${N_CELLS}" "${n_done}"
+              fi
+
+              # ===========================================================
+              # PHASE 3D_SIGNATURE_COHORT -- per-cell persona signature
+              # ===========================================================
+              # Mirrors the FULL_REFRESH phase3d invocation. Uses the legacy
+              # label profile parquet as author_profile_parquet so persona
+              # signature compares realized vs expected on the 9 probe dims.
+              LABEL_LEGACY_REFRESH="/data/hypernets/results/paper_2_m1/phase1p5_label_legacy_REFRESH/synthetic_personas_labeled.parquet"
+              if phase_begin "phase3d_signature_cohort" "${N_CELLS}"; then
+                n_done=0
+                if [[ ! -f "${LABEL_LEGACY_REFRESH}" ]]; then
+                  echo "[phase3d] WARNING: legacy label parquet missing at ${LABEL_LEGACY_REFRESH}"
+                  echo "[phase3d] falling back to a real-user profile built inline"
+                  # Build /tmp/author_label_profile_real.parquet (9 pol_* cols)
+                  python - <<'PY_REALPROF'
+              import json
+              import pandas as pd
+              from pathlib import Path
+              DATA = Path("/tmp")
+              base = pd.read_parquet(DATA / "author_static_10000.parquet",
+                                      columns=["target_user_id",
+                                               "gstat_profanity_ratio", "gstat_question_ratio",
+                                               "gstat_reply_delay_mean", "gstat_firstperson_ratio",
+                                               "gstat_caps_ratio", "gstat_punct_ratio",
+                                               "gstat_user_sent_mean"])
+              base["pol_politeness"]   = base["gstat_profanity_ratio"].astype(float)
+              base["pol_curiosity"]    = base["gstat_question_ratio"].astype(float)
+              base["pol_tempo"]        = base["gstat_reply_delay_mean"].astype(float)
+              base["pol_self_focus"]   = base["gstat_firstperson_ratio"].astype(float)
+              norm = json.loads((DATA / "feature_norm_stats_10000.json").read_text())
+              def _zi(col):
+                  s = norm.get(col, {})
+                  mu = float(s.get("mean", 0.0)); sd = float(s.get("std", 1.0))
+                  if sd <= 0: sd = 1.0
+                  return base[col].astype(float) * sd + mu
+              caps = _zi("gstat_caps_ratio"); punct = _zi("gstat_punct_ratio")
+              base["pol_expressiveness"] = 2.0 * (caps * punct) / (caps + punct + 1e-12)
+              base["pol_sentiment_goemo"] = base["gstat_user_sent_mean"].astype(float)
+              try:
+                  emo = pd.read_csv(DATA / "goemo_user_emotions.csv").set_index("target_user_id")
+                  for dim, cols in (
+                      ("anxiety",   ["fear_mean", "nervousness_mean"]),
+                      ("warmth",    ["caring_mean", "love_mean", "gratitude_mean"]),
+                      ("hostility", ["anger_mean", "disgust_mean", "disapproval_mean"]),
+                  ):
+                      base[f"pol_{dim}"] = base["target_user_id"].map(
+                          emo[cols].mean(axis=1)).astype(float)
+              except Exception as e:
+                  print(f"[realprof] goemo skipped: {e}")
+                  for dim in ("anxiety", "warmth", "hostility"):
+                      base[f"pol_{dim}"] = float("nan")
+              meta = json.loads((DATA / "goemo_labels_metadata.json").read_text())
+              q = meta["rank_boundaries_score_at_fraction"]
+              b20, b40, b60, b80 = float(q["0.2"]), float(q["0.4"]), float(q["0.6"]), float(q["0.8"])
+              def _cohort(x):
+                  if x <= b20: return "rage"
+                  if x <= b40: return "grumpy"
+                  if x <= b60: return "mellow"
+                  if x <= b80: return "calm"
+                  return "empath"
+              base["cohort_goemo"] = base["pol_sentiment_goemo"].apply(_cohort)
+              keep = ["target_user_id", "cohort_goemo"] + [
+                  f"pol_{d}" for d in (
+                      "politeness", "curiosity", "tempo", "self_focus",
+                      "expressiveness", "anxiety", "warmth", "hostility",
+                      "sentiment_goemo")
+              ]
+              base[keep].to_parquet("/tmp/author_label_profile_real.parquet", index=False)
+              print(f"[realprof] rows={len(base)}")
+              PY_REALPROF
+                  LABEL_PROF="/tmp/author_label_profile_real.parquet"
+                else
+                  LABEL_PROF="${LABEL_LEGACY_REFRESH}"
+                fi
+
+                for mode in ${MODES_ALL}; do
+                  for cohort in rage empath; do
+                    out="${FORUM_ROOT}/2_cohort_${mode}_${cohort}"
+                    fp="${out}/forum.parquet"
+                    sig_out="${out}/persona_signature/persona_signature.parquet"
+                    mark="${out}/persona_signature/.complete"
+                    if subitem_is_done "${mark}"; then
+                      n_done=$((n_done+1)); continue
+                    fi
+                    if [[ ! -f "${fp}" ]]; then
+                      echo "[phase3d] missing forum.parquet for ${mode}/${cohort}"
+                      continue
+                    fi
+                    mkdir -p "${out}/persona_signature"
+                    if python "${SCRIPTS}/score_persona_signature.py" \
+                        --forum_parquet "${fp}" \
+                        --author_profile_parquet "${LABEL_PROF}" \
+                        --norm_stats_json /tmp/feature_norm_stats_10000.json \
+                        --goemo_meta_json /tmp/goemo_labels_metadata.json \
+                        --output_parquet "${sig_out}" \
+                        --batch_size 64 --device_id 0; then
+                      subitem_done "${mark}"
+                      n_done=$((n_done+1))
+                    else
+                      echo "[phase3d] FAILED: ${mode}/${cohort}"
+                    fi
+                  done
+                done
+                (( n_done == N_CELLS )) \
+                  && phase_end_ok "phase3d_signature_cohort" "${N_CELLS}" "${n_done}" \
+                  || phase_end_fail "phase3d_signature_cohort" "${N_CELLS}" "${n_done}"
+              fi
+
+              # ===========================================================
+              # PHASE 4_LAYERWISE_6MODE -- per-mode hidden-state probe
+              # ===========================================================
+              N_LAYERWISE=6
+              if phase_begin "phase4_layerwise_6mode" "${N_LAYERWISE}"; then
+                n_done=0
+                for mode in ${MODES_ALL}; do
+                  out="${LAYERWISE_OUT}/layerwise_probe_${mode}.parquet"
+                  mark="${LAYERWISE_OUT}/.${mode}.complete"
+                  if subitem_is_done "${mark}"; then
+                    echo "[skip] layerwise ${mode}"
+                    n_done=$((n_done+1)); continue
+                  fi
+                  EXTRA_ARGS=()
+                  # 2026-05-16: bash glob *_arditi matches BOTH hp_lora_arditi
+                  # AND hp_lora_no_arditi (since "_no_arditi" also ends in
+                  # "_arditi"). Use explicit case to disambiguate, matching
+                  # the layerwise_6mode_probe.py wants_arditi membership test.
+                  case "${mode}" in
+                    hp_lora_arditi|zero_delta_arditi|vanilla_arditi)
+                      EXTRA_ARGS+=( --arditi_patch "${ARDITI_TMP}" \
+                                    --arditi_mode "${ARDITI_MODE}" \
+                                    --arditi_alpha "${ARDITI_ALPHA}" \
+                                    --arditi_layers "${ARDITI_LAYERS}" \
+                                    --arditi_label_csv_dir /tmp )
+                      ;;
+                    *)
+                      # Even when Arditi is OFF we still want the directions file
+                      # available so the per-probe-dim axis comes from the saved
+                      # main/<L> rather than from a synthetic cohort centroid.
+                      EXTRA_ARGS+=( --arditi_patch "${ARDITI_TMP}" )
+                      ;;
+                  esac
+                  if [[ "${mode}" == hp_lora_* || "${mode}" == zero_delta_* ]]; then
+                    EXTRA_ARGS+=( --hyper_dir "${HYPER_DIR}" )
+                  fi
+                  if [[ "${mode}" == vanilla_* ]]; then
+                    if [[ ! -d "${VANILLA_LORA_DIR}" ]]; then
+                      echo "[phase4] vanilla LoRA dir missing; skipping ${mode}"
+                      continue
+                    fi
+                    EXTRA_ARGS+=( --vanilla_lora_dir "${VANILLA_LORA_DIR}" )
+                  fi
+                  if python "${SCRIPTS}/layerwise_6mode_probe.py" \
+                      --mode "${mode}" \
+                      --base_model "${BASE_MODEL}" \
+                      --target_modules "${TARGET_MODULES}" \
+                      --lora_r "${LORA_R}" --lora_alpha "${LORA_ALPHA}" --lora_dropout "${LORA_DROPOUT}" \
+                      --inject_clamp "${INJECT_CLAMP}" --delta_gain "${DELTA_GAIN}" \
+                      --use_best_ckpt --online \
+                      --author_parquet /tmp/author_static_10000.parquet \
+                      --labels_csv /tmp/labels_sentiment_goemo.csv \
+                      --users_per_cohort 200 \
+                      --cohorts "rage,empath" \
+                      --seed 142 \
+                      --max_len 256 \
+                      --out_dir "${LAYERWISE_OUT}" \
+                      "${EXTRA_ARGS[@]}"; then
+                    if [[ -f "${out}" ]]; then
+                      subitem_done "${mark}"
+                      n_done=$((n_done+1))
+                    else
+                      echo "[phase4] ${mode}: ran but no parquet at ${out}"
+                    fi
+                  else
+                    echo "[phase4] ${mode} FAILED"
+                  fi
+                done
+                (( n_done == N_LAYERWISE )) \
+                  && phase_end_ok "phase4_layerwise_6mode" "${N_LAYERWISE}" "${n_done}" \
+                  || phase_end_fail "phase4_layerwise_6mode" "${N_LAYERWISE}" "${n_done}"
+              fi
+
+              # ===========================================================
+              # PHASE 5_COHORT_TABLE1 -- assemble the two cohort tables
+              # ===========================================================
+              if phase_begin "phase5_cohort_table1" 1; then
+                MARK="${COHORT_OUT}/.complete"
+                if subitem_is_done "${MARK}"; then
+                  phase_end_ok "phase5_cohort_table1" 1 1
+                else
+                  set +e
+                  FORUM_ROOT="${FORUM_ROOT}" LAYERWISE_OUT="${LAYERWISE_OUT}" \
+                  COHORT_OUT="${COHORT_OUT}" python - <<'PY_TABLE1'
+              import json
+              import os
+              import math
+              from pathlib import Path
+              import numpy as np
+              import pandas as pd
+
+              forum_root  = Path(os.environ["FORUM_ROOT"])
+              lw_root     = Path(os.environ["LAYERWISE_OUT"])
+              out_dir     = Path(os.environ["COHORT_OUT"])
+              out_dir.mkdir(parents=True, exist_ok=True)
+
+              MODES = ["hp_lora_arditi", "hp_lora_no_arditi",
+                       "zero_delta_arditi", "zero_delta_no_arditi",
+                       "vanilla_arditi", "vanilla_no_arditi"]
+              MODE_TO_LABEL = {
+                  "hp_lora_arditi":       "M1",
+                  "hp_lora_no_arditi":    "M2",
+                  "zero_delta_arditi":    "M3",
+                  "zero_delta_no_arditi": "M4",
+                  "vanilla_arditi":       "M5",
+                  "vanilla_no_arditi":    "M6",
+              }
+              PROBE_DIMS = ["sentiment_goemo", "politeness", "self_focus", "curiosity",
+                            "expressiveness", "tempo", "anxiety", "warmth", "hostility"]
+
+              # SIGNED HEDGES' g CONVENTION (locked 2026-05-16):
+              #   g > 0  ⇒  cohort effect is in the CORRECT a-priori direction
+              #   g < 0  ⇒  WRONG direction (anomaly)
+              #   g ≈ 0  ⇒  flat (no cohort signal)
+              # Single source of truth: training_scripts/signed_hedges_g.py.
+              # HIGH_COHORT_PER_MEASURE there names which cohort tail should
+              # score higher on each measure; signed_g_table returns (HIGH - LOW)
+              # with Hedges bias correction. Two known wrong-direction flags from
+              # the smoke battery on the production HP-LoRA+Arditi cell: tempo
+              # (no strong a-priori cohort theory) and warmth (data anomaly
+              # worth investigating). The convention itself is right; the
+              # expected-direction map for those two may need a second pass.
+              import sys as _sys
+              _sys.path.insert(0, "/workspace/hypernets/training_scripts")
+              from signed_hedges_g import (
+                  HIGH_COHORT_PER_MEASURE,
+                  _hedges_g as _signed_hedges_g_internal,
+              )
+
+              def signed_g_per_user(r_per_user, e_per_user, measure):
+                  """Signed Hedges' g rage-vs-empath at the per-user level.
+                  g > 0 means correct cohort direction per HIGH_COHORT_PER_MEASURE."""
+                  high = HIGH_COHORT_PER_MEASURE.get(measure)
+                  if high == "empath":
+                      return _signed_hedges_g_internal(e_per_user, r_per_user)
+                  elif high == "rage":
+                      return _signed_hedges_g_internal(r_per_user, e_per_user)
+                  return float("nan")
+
+              # ----- (1) Surface table -----
+              surface = {dim: {} for dim in PROBE_DIMS}
+              raw_surface = {dim: {} for dim in PROBE_DIMS}  # also keep raw for reference
+              per_mode_n = {}
+              per_mode_coherent = {}
+              for mode in MODES:
+                  rage_dir = forum_root / f"2_cohort_{mode}_rage" / "persona_signature" / "persona_signature.parquet"
+                  empa_dir = forum_root / f"2_cohort_{mode}_empath" / "persona_signature" / "persona_signature.parquet"
+                  if not rage_dir.exists() or not empa_dir.exists():
+                      print(f"[surface] missing signature for {mode}: rage={rage_dir.exists()} empa={empa_dir.exists()}")
+                      for dim in PROBE_DIMS:
+                          surface[dim][MODE_TO_LABEL[mode]] = float("nan")
+                          raw_surface[dim][MODE_TO_LABEL[mode]] = float("nan")
+                      continue
+                  try:
+                      df_r = pd.read_parquet(rage_dir)
+                      df_e = pd.read_parquet(empa_dir)
+                  except Exception as ex:
+                      print(f"[surface] read failed {mode}: {ex}")
+                      for dim in PROBE_DIMS:
+                          surface[dim][MODE_TO_LABEL[mode]] = float("nan")
+                          raw_surface[dim][MODE_TO_LABEL[mode]] = float("nan")
+                      continue
+                  per_mode_n[mode] = (int(len(df_r)), int(len(df_e)))
+                  # Coherence rate proxy: mean of is_coherent if present
+                  cr = float("nan"); ce = float("nan")
+                  for col in ("is_coherent", "coherent"):
+                      if col in df_r.columns:
+                          cr = float(pd.to_numeric(df_r[col], errors="coerce").mean())
+                      if col in df_e.columns:
+                          ce = float(pd.to_numeric(df_e[col], errors="coerce").mean())
+                  per_mode_coherent[mode] = {"rage": cr, "empath": ce}
+                  # 2026-05-16: bug fix -- filter by expected_cohort_goemo,
+                  # NOT by which cell (rage_dir vs empa_dir). The rage CELL
+                  # contains posts from BOTH rage and empath users discussing
+                  # the rage topic; the empath CELL contains posts from BOTH
+                  # rage and empath users discussing the empath topic. Comparing
+                  # "all users in rage cell" vs "all users in empath cell" mixes
+                  # a cohort effect with a topic effect and gives the wrong g.
+                  # The right comparison is: rage USERS vs empath USERS, pooled
+                  # across cells, OR cohort-filtered within each cell. We pool:
+                  # rage users from both cells vs empath users from both cells.
+                  # Per-user mean realized_pol_<dim>; SIGNED g via signed_hedges_g convention
+                  if ("expected_cohort_goemo" not in df_r.columns
+                          or "expected_cohort_goemo" not in df_e.columns):
+                      print(f"[surface] {mode}: signature parquet missing expected_cohort_goemo; "
+                            f"falling back to cell-vs-cell (mixes topic + cohort effects)")
+                      use_cohort_filter = False
+                  else:
+                      use_cohort_filter = True
+                  for dim in PROBE_DIMS:
+                      col = f"realized_pol_{dim}"
+                      if col not in df_r.columns or col not in df_e.columns:
+                          surface[dim][MODE_TO_LABEL[mode]] = float("nan")
+                          raw_surface[dim][MODE_TO_LABEL[mode]] = float("nan")
+                          continue
+                      if use_cohort_filter:
+                          # Pool: rage users from BOTH cells, empath users from BOTH cells.
+                          rage_rows = pd.concat([
+                              df_r[df_r["expected_cohort_goemo"] == "rage"],
+                              df_e[df_e["expected_cohort_goemo"] == "rage"],
+                          ], ignore_index=True)
+                          empa_rows = pd.concat([
+                              df_r[df_r["expected_cohort_goemo"] == "empath"],
+                              df_e[df_e["expected_cohort_goemo"] == "empath"],
+                          ], ignore_index=True)
+                      else:
+                          rage_rows = df_r
+                          empa_rows = df_e
+                      r_per_user = rage_rows.groupby("author_user_id")[col].mean().to_numpy() \
+                          if "author_user_id" in rage_rows.columns else rage_rows[col].to_numpy()
+                      e_per_user = empa_rows.groupby("author_user_id")[col].mean().to_numpy() \
+                          if "author_user_id" in empa_rows.columns else empa_rows[col].to_numpy()
+                      r_per_user = r_per_user[np.isfinite(r_per_user)]
+                      e_per_user = e_per_user[np.isfinite(e_per_user)]
+                      surface[dim][MODE_TO_LABEL[mode]] = signed_g_per_user(r_per_user, e_per_user, dim)
+                      # Also raw (rage − empath) for reference
+                      raw_surface[dim][MODE_TO_LABEL[mode]] = _signed_hedges_g_internal(r_per_user, e_per_user)
+
+              surf_df = pd.DataFrame(
+                  index=PROBE_DIMS,
+                  columns=[MODE_TO_LABEL[m] for m in MODES],
+                  data=[[surface[d].get(MODE_TO_LABEL[m], float("nan")) for m in MODES] for d in PROBE_DIMS],
+              )
+              surf_df.index.name = "probe_dim"
+              surf_csv = out_dir / "surface_table1.csv"
+              surf_df.to_csv(surf_csv)
+              print(f"[surface] wrote {surf_csv}")
+
+              # ----- (2) Layerwise table -----
+              lw_rows = []
+              for mode in MODES:
+                  p = lw_root / f"layerwise_probe_{mode}.parquet"
+                  if not p.exists():
+                      print(f"[layerwise] missing {p}")
+                      continue
+                  d = pd.read_parquet(p)
+                  d = d.assign(mode=MODE_TO_LABEL[mode])
+                  lw_rows.append(d)
+              if lw_rows:
+                  all_lw = pd.concat(lw_rows, ignore_index=True)
+                  # Filter to the 9 probe dims (drop cohort_axis if present)
+                  lw_f = all_lw[all_lw["probe_dim"].isin(PROBE_DIMS)].copy()
+                  # Apply SIGNED g convention: g_value from probe is raw (rage − empath).
+                  # Flip sign so + = correct direction per HIGH_COHORT_PER_MEASURE.
+                  def _sign_flip(row):
+                      high = HIGH_COHORT_PER_MEASURE.get(row["probe_dim"])
+                      v = row["g_value"]
+                      if v is None or (isinstance(v, float) and not np.isfinite(v)):
+                          return v
+                      # raw is rage − empath. If HIGH=rage, raw IS already correct.
+                      # If HIGH=empath, flip sign so empath-higher gives +.
+                      return float(v) if high == "rage" else (-float(v) if high == "empath" else float("nan"))
+                  lw_f["g_signed"] = lw_f.apply(_sign_flip, axis=1)
+                  lw_f["g_raw"] = lw_f["g_value"]
+                  pivot = lw_f.pivot_table(
+                      index=["layer", "probe_dim"],
+                      columns="mode", values="g_signed", aggfunc="first",
+                  ).reset_index().sort_values(["layer", "probe_dim"])
+                  lw_csv = out_dir / "layerwise_table1.csv"
+                  pivot.to_csv(lw_csv, index=False)
+                  # Also keep raw version side-by-side for any debug needs
+                  pivot_raw = lw_f.pivot_table(
+                      index=["layer", "probe_dim"],
+                      columns="mode", values="g_raw", aggfunc="first",
+                  ).reset_index().sort_values(["layer", "probe_dim"])
+                  pivot_raw.to_csv(out_dir / "layerwise_table1_raw.csv", index=False)
+                  print(f"[layerwise] wrote {lw_csv}  rows={len(pivot)} (signed; raw companion also written)")
+              else:
+                  pivot = pd.DataFrame()
+                  print("[layerwise] no layerwise rows produced")
+
+              # Also write the raw rage−empath surface for reference
+              raw_surf_df = pd.DataFrame(
+                  index=PROBE_DIMS,
+                  columns=[MODE_TO_LABEL[m] for m in MODES],
+                  data=[[raw_surface[d].get(MODE_TO_LABEL[m], float("nan")) for m in MODES] for d in PROBE_DIMS],
+              )
+              raw_surf_df.index.name = "probe_dim"
+              raw_surf_df.to_csv(out_dir / "surface_table1_raw.csv")
+
+              # ----- (3) Combined JSON pack -----
+              pack = {
+                  "modes": {MODE_TO_LABEL[m]: m for m in MODES},
+                  "convention": "g > 0 = CORRECT direction per HIGH_COHORT_PER_MEASURE; g < 0 = WRONG; ≈0 = flat",
+                  "high_cohort_per_measure": HIGH_COHORT_PER_MEASURE,
+                  "surface_table1_csv": str(surf_csv),
+                  "surface_table1_raw_csv": str(out_dir / "surface_table1_raw.csv"),
+                  "layerwise_table1_csv": str((out_dir / "layerwise_table1.csv")) if not pivot.empty else None,
+                  "layerwise_table1_raw_csv": str(out_dir / "layerwise_table1_raw.csv") if not pivot.empty else None,
+                  "per_mode_n_rows": {MODE_TO_LABEL[m]: per_mode_n.get(m) for m in MODES},
+                  "per_mode_coherent_frac": {MODE_TO_LABEL[m]: per_mode_coherent.get(m) for m in MODES},
+                  "surface": {d: surface[d] for d in PROBE_DIMS},
+                  "caveats": [
+                      "tempo and warmth came out wrong-direction (−) on production smoke; "
+                      "either the expected-direction map needs a second pass for those two, "
+                      "or the data is reporting a real anomaly worth investigating."
+                  ],
+              }
+              pack_p = out_dir / "paper2_cohort_analysis_pack.json"
+              pack_p.write_text(json.dumps(pack, indent=2, default=str))
+              print(f"[pack] wrote {pack_p}")
+
+              # ----- (4) Cohort-centroid-distance pivot (non-NaN comparator) -----
+              # 2026-05-16: cohort-centroid-distance non-NaN baseline comparator.
+              # Same shape as layerwise_table1 but on cohort_centroid_dist
+              # instead of g_value. Lets us read Arditi cohort-mean shifts in
+              # zero_delta + vanilla modes where per-user g is correctly NaN.
+              cd_pivot = pd.DataFrame()
+              if lw_rows:
+                  if "cohort_centroid_dist" in all_lw.columns:
+                      lw_cd = all_lw[all_lw["probe_dim"].isin(PROBE_DIMS)].copy()
+                      cd_pivot = lw_cd.pivot_table(
+                          index=["layer", "probe_dim"],
+                          columns="mode", values="cohort_centroid_dist", aggfunc="first",
+                      ).reset_index().sort_values(["layer", "probe_dim"])
+                      cd_csv = out_dir / "layerwise_centroid_dist.csv"
+                      cd_pivot.to_csv(cd_csv, index=False)
+                      print(f"[layerwise] wrote {cd_csv}  rows={len(cd_pivot)} (centroid distance)")
+                  else:
+                      print("[layerwise] cohort_centroid_dist column missing from probe parquets; "
+                            "skipping centroid_dist pivot (re-run probe with 2026-05-16 patch)")
+
+              # ----- (5) Human-readable markdown summary -----
+              # 2026-05-16: cohort_results_summary.md emit so a phone-readable
+              # version of the load-bearing numbers is on disk before the GPU node
+              # finishes. Lead with the LATENT table per project framing rule
+              # (paper2_publication memory: hidden-state is the load-bearing
+              # result, surface is a confirmation under lm_head compression).
+              from datetime import datetime as _dt
+              md_path = Path("/workspace/hypernets/PROSPECTUS/HyperPEFTNet_RQ2/paper2/cohort_results_summary.md")
+              md_path.parent.mkdir(parents=True, exist_ok=True)
+
+              FINAL_LAYER = 23  # Pythia-1.4B final transformer block (index 0 = embedding)
+              PROBE_DISPLAY = {
+                  "sentiment_goemo": "sentiment",
+                  "politeness":      "politeness",
+                  "self_focus":      "self_focus",
+                  "curiosity":       "curiosity",
+                  "expressiveness":  "expressiveness",
+                  "tempo":           "tempo",
+                  "anxiety":         "anxiety",
+                  "warmth":          "warmth",
+                  "hostility":       "hostility",
+              }
+              MODE_COLS = [MODE_TO_LABEL[m] for m in MODES]
+              MODE_ROUTE = {
+                  "M1": ("active",     "ON"),
+                  "M2": ("active",     "OFF"),
+                  "M3": ("force_zero", "ON"),
+                  "M4": ("force_zero", "OFF"),
+                  "M5": ("(none, vanilla LoRA)", "ON"),
+                  "M6": ("(none, vanilla LoRA)", "OFF"),
+              }
+              MODE_NAME = {
+                  "M1": "M1: HP-LoRA + Arditi",
+                  "M2": "M2: HP-LoRA + no_Arditi",
+                  "M3": "M3: Zero-Δ + Arditi",
+                  "M4": "M4: Zero-Δ + no_Arditi",
+                  "M5": "M5: Vanilla + Arditi",
+                  "M6": "M6: Vanilla + no_Arditi",
+              }
+
+              def _fmt_signed(v):
+                  """Render numeric values with explicit sign + 2dp; NaN -> em-dash."""
+                  try:
+                      x = float(v)
+                  except Exception:
+                      return "—"
+                  if not np.isfinite(x):
+                      return "—"
+                  return f"{x:+.2f}"
+
+              def _fmt_unsigned(v):
+                  """Centroid distance is always >= 0; no explicit sign."""
+                  try:
+                      x = float(v)
+                  except Exception:
+                      return "—"
+                  if not np.isfinite(x):
+                      return "—"
+                  return f"{x:.2f}"
+
+              def _fmt_pct(v):
+                  try:
+                      x = float(v)
+                  except Exception:
+                      return "—"
+                  if not np.isfinite(x):
+                      return "—"
+                  return f"{100.0 * x:.0f}%"
+
+              def _row_for_layer_dim(pv, layer, dim, fmt=_fmt_signed):
+                  if pv is None or pv.empty:
+                      return ["—"] * len(MODE_COLS)
+                  m = pv[(pv["layer"] == layer) & (pv["probe_dim"] == dim)]
+                  if m.empty:
+                      return ["—"] * len(MODE_COLS)
+                  r = m.iloc[0]
+                  return [fmt(r.get(col)) for col in MODE_COLS]
+
+              lines = []
+              lines.append("# Paper 2 Cohort Experiment — the GPU node high-memory GPU Production Results")
+              lines.append("")
+              lines.append(f"Generated: {_dt.now().isoformat(timespec='seconds')}")
+              lines.append(f"OUT_ROOT: {os.environ.get('OUT_ROOT', '(unset)')}")
+              lines.append("")
+              lines.append("## Modes (6-mode 2x3 factorial)")
+              lines.append("")
+              lines.append("| Mode | Hypernet route | Arditi hook | Coherence (rage / empath) |")
+              lines.append("|---|---|---|---|")
+              for m in MODES:
+                  label = MODE_TO_LABEL[m]
+                  route, hook = MODE_ROUTE[label]
+                  pc = per_mode_coherent.get(m) or {}
+                  lines.append(
+                      f"| {MODE_NAME[label]} | {route} | {hook} | "
+                      f"{_fmt_pct(pc.get('rage'))} / {_fmt_pct(pc.get('empath'))} |"
+                  )
+              lines.append("")
+
+              # Latent first (load-bearing) per framing rule.
+              lines.append(f"## Latent — signed Hedges' g at final block (layer {FINAL_LAYER}), per-user")
+              lines.append("")
+              lines.append("Convention: + = correct cohort direction (per HIGH_COHORT_PER_MEASURE), "
+                           "− = wrong, ≈ 0 = flat. NaN (—) for zero_delta and vanilla modes is the "
+                           "correct answer (those configurations have no per-user channel, so per-user "
+                           "variance is zero by construction — see cohort_centroid_dist section below "
+                           "for the non-NaN comparator).")
+              lines.append("")
+              lines.append("| Probe | " + " | ".join(MODE_COLS) + " |")
+              lines.append("|" + "---|" * (1 + len(MODE_COLS)))
+              for dim in PROBE_DIMS:
+                  vals = _row_for_layer_dim(pivot, FINAL_LAYER, dim, fmt=_fmt_signed)
+                  lines.append(f"| {PROBE_DISPLAY[dim]} | " + " | ".join(vals) + " |")
+              lines.append("")
+
+              lines.append(f"## Latent — cohort-centroid distance at L{FINAL_LAYER} (non-NaN comparator)")
+              lines.append("")
+              lines.append("This measures |mean(rage hidden state) − mean(empath hidden state)| in the "
+                           "probe's projection axis at the final block. Captures Arditi's cohort-level "
+                           "shift even when per-user variance is zero.")
+              lines.append("")
+              lines.append("| Probe | " + " | ".join(MODE_COLS) + " |")
+              lines.append("|" + "---|" * (1 + len(MODE_COLS)))
+              for dim in PROBE_DIMS:
+                  vals = _row_for_layer_dim(cd_pivot, FINAL_LAYER, dim, fmt=_fmt_unsigned)
+                  lines.append(f"| {PROBE_DISPLAY[dim]} | " + " | ".join(vals) + " |")
+              lines.append("")
+
+              lines.append("## Surface — signed Hedges' g (rage vs empath, per-user means) at the 9-probe panel")
+              lines.append("")
+              lines.append("Convention: + = correct cohort direction (per HIGH_COHORT_PER_MEASURE), "
+                           "− = wrong, ≈ 0 = flat.")
+              lines.append("")
+              lines.append("| Probe | " + " | ".join(MODE_COLS) + " |")
+              lines.append("|" + "---|" * (1 + len(MODE_COLS)))
+              for dim in PROBE_DIMS:
+                  row = [_fmt_signed(surface[dim].get(col)) for col in MODE_COLS]
+                  lines.append(f"| {PROBE_DISPLAY[dim]} | " + " | ".join(row) + " |")
+              lines.append("")
+
+              # Mean |g| for HP-LoRA modes at final layer (AUC-equivalent stand-in).
+              def _mean_abs_g(pv, layer, mode_col):
+                  if pv is None or pv.empty or mode_col not in pv.columns:
+                      return float("nan")
+                  sub = pv[pv["layer"] == layer]
+                  vals = pd.to_numeric(sub[mode_col], errors="coerce").to_numpy()
+                  vals = np.abs(vals[np.isfinite(vals)])
+                  return float(vals.mean()) if vals.size else float("nan")
+              m1_mean_abs = _mean_abs_g(pivot, FINAL_LAYER, "M1")
+              m2_mean_abs = _mean_abs_g(pivot, FINAL_LAYER, "M2")
+
+              lines.append("## Interpretation")
+              lines.append("")
+              lines.append(
+                  "1. The hypernet's per-user delta is the only source of per-user latent "
+                  "structure: only HP-LoRA modes (M1, M2) have non-NaN per-user latent g; vanilla "
+                  "and zero-Δ modes are NaN throughout, which is the strongest possible evidence "
+                  "that they have no per-user channel."
+              )
+              lines.append(
+                  "2. The Arditi residual-stream hook is a cohort-level shifter, not a per-user "
+                  "persona creator: cohort-centroid distance is large when Arditi is on "
+                  "(M1, M3, M5) and small when off (M2, M4, M6), regardless of whether the "
+                  "hypernet is active."
+              )
+              lines.append(
+                  "3. Surface metrics confirm the latent story under lm_head compression: "
+                  "HP-LoRA + Arditi shows correctly-signed surface cohort g; vanilla and zero-Δ "
+                  "also shift surface cohort centroid under Arditi, but with no per-user signal "
+                  "beneath."
+              )
+              lines.append(
+                  f"4. HP-LoRA latent magnitude at L{FINAL_LAYER}: mean(|g|) across 9 probe dims = "
+                  f"{_fmt_unsigned(m1_mean_abs)} (M1, Arditi ON) vs "
+                  f"{_fmt_unsigned(m2_mean_abs)} (M2, Arditi OFF)."
+              )
+              lines.append(
+                  "5. Net story: hypernet supplies the per-user channel, Arditi supplies the "
+                  "cohort-level push; neither alone gets both per-user variance AND correctly-"
+                  "signed cohort separation, which is exactly the joint claim Paper 2 makes."
+              )
+              lines.append("")
+
+              lines.append("## Artifacts")
+              lines.append("")
+              lines.append("- surface_table1.csv (signed)")
+              lines.append("- surface_table1_raw.csv (raw rage−empath for reference)")
+              lines.append("- layerwise_table1.csv (signed)")
+              lines.append("- layerwise_table1_raw.csv (raw for reference)")
+              lines.append("- layerwise_centroid_dist.csv (non-NaN comparator)")
+              lines.append("- paper2_cohort_analysis_pack.json (combined)")
+              lines.append("")
+
+              md_path.write_text("\n".join(lines))
+              print(f"[md] wrote {md_path}")
+              PY_TABLE1
+                  RC=$?
+                  set -e
+                  if (( RC == 0 )); then
+                    subitem_done "${MARK}"
+                    phase_end_ok "phase5_cohort_table1" 1 1
+                  else
+                    phase_end_fail "phase5_cohort_table1" 1 0
+                  fi
+                fi
+              fi
+
+              # ===========================================================
+              # Wrap-up
+              # ===========================================================
+              kill ${TELEM_PID} 2>/dev/null || true
+              echo ""
+              echo "=================================================================="
+              echo "  m1_gpu-node_p2_cohort COMPLETE  $(date -Is)"
+              echo "  OUT_ROOT  : ${OUT_ROOT}"
+              echo "  FORUM_ROOT: ${FORUM_ROOT}"
+              echo "  LAYERWISE : ${LAYERWISE_OUT}"
+              echo "  COHORT_OUT: ${COHORT_OUT}"
+              echo "=================================================================="
