@@ -1,0 +1,165 @@
+{
+  "author_parquet": "/workspace/data/author_static_10000.parquet",
+  "conditioning_features_used_for_warnings": [
+    "gstat_punct_ratio",
+    "gstat_question_ratio",
+    "gstat_user_post_rate",
+    "gstat_user_sr_max_share",
+    "gstat_user_subreddit_entropy",
+    "gstat_user_ttr"
+  ],
+  "created_utc": "2026-04-11T23:05:35Z",
+  "global_parquet": "/workspace/data/global_features_10000.parquet",
+  "n_users": 10000,
+  "norm_stats": "/workspace/data/feature_norm_stats_10000.json",
+  "outputs": {
+    "labels_curiosity.csv": {
+      "boundary_high_min_score": 1.2542519569396973,
+      "boundary_low_max_score": -1.07310950756073,
+      "counts": {
+        "declarative": 1000,
+        "inquisitive": 1000
+      },
+      "family": "curiosity",
+      "high_q": 0.9,
+      "intended_band_relative_to_paper_k6": "in_band",
+      "low_q": 0.1,
+      "method": "rank",
+      "mode": "binary_tails",
+      "n_high": 1000,
+      "n_low": 1000,
+      "n_valid": 10000,
+      "note": "Curiosity extremes: bottom/top 10% tails; in-band positive control in K=6.",
+      "score_cols": [
+        "gstat_question_ratio"
+      ]
+    },
+    "labels_expressiveness.csv": {
+      "boundary_high_min_score": 0.06507333810657452,
+      "boundary_low_max_score": 0.017193510063989975,
+      "counts": {
+        "emphatic": 1000,
+        "reserved": 1000
+      },
+      "family": "expressiveness",
+      "high_q": 0.9,
+      "intended_band_relative_to_paper_k6": "in_band",
+      "low_q": 0.1,
+      "method": "rank",
+      "mode": "binary_tails",
+      "n_high": 1000,
+      "n_low": 1000,
+      "n_valid": 10000,
+      "note": "Expressiveness extremes: bottom/top 10% tails; harmonic mean of caps & punct.",
+      "score_cols": [
+        "gstat_caps_ratio",
+        "gstat_punct_ratio"
+      ]
+    },
+    "labels_politeness.csv": {
+      "boundary_high_min_score": 1.3042727708816528,
+      "boundary_low_max_score": -0.9901819229125977,
+      "counts": {
+        "polite": 1000,
+        "vulgar": 1000
+      },
+      "family": "politeness",
+      "high_q": 0.9,
+      "intended_band_relative_to_paper_k6": "out_of_band",
+      "low_q": 0.1,
+      "method": "rank",
+      "mode": "binary_tails",
+      "n_high": 1000,
+      "n_low": 1000,
+      "n_valid": 10000,
+      "note": "Politeness extremes: bottom/top 10% tails; n=1000 per cohort.",
+      "score_cols": [
+        "gstat_profanity_ratio"
+      ]
+    },
+    "labels_self_focus.csv": {
+      "boundary_high_min_score": 1.3133845329284668,
+      "boundary_low_max_score": -1.2073849439620972,
+      "counts": {
+        "egocentric": 1000,
+        "selfless": 1000
+      },
+      "family": "self_focus",
+      "high_q": 0.9,
+      "intended_band_relative_to_paper_k6": "out_of_band",
+      "low_q": 0.1,
+      "method": "rank",
+      "mode": "binary_tails",
+      "n_high": 1000,
+      "n_low": 1000,
+      "n_valid": 10000,
+      "note": "Self-focus extremes: bottom/top 10% tails; first-person pronoun ratio.",
+      "score_cols": [
+        "gstat_firstperson_ratio"
+      ]
+    },
+    "labels_sentiment_extremes.csv": {
+      "boundary_high_min_score": 1.2330970764160156,
+      "boundary_low_max_score": -1.1427419185638428,
+      "counts": {
+        "empath": 1000,
+        "rage": 1000
+      },
+      "family": "sentiment_extremes",
+      "high_q": 0.9,
+      "low_q": 0.1,
+      "method": "rank",
+      "mode": "binary_tails",
+      "n_high": 1000,
+      "n_low": 1000,
+      "n_valid": 10000
+    },
+    "labels_sentiment_quintiles.csv": {
+      "counts": {
+        "calm": 2000,
+        "empath": 2000,
+        "grumpy": 2000,
+        "mellow": 2000,
+        "rage": 2000
+      },
+      "family": "sentiment_quintiles",
+      "mode": "sentiment_quintiles_rank",
+      "n_users": 10000,
+      "rank_boundaries_score_at_fraction": {
+        "0.2": -0.8050366044044495,
+        "0.4": -0.30725884437561035,
+        "0.6": 0.15657135844230652,
+        "0.8": 0.7368606925010681
+      }
+    },
+    "labels_tempo.csv": {
+      "boundary_high_min_score": 1.1705008745193481,
+      "boundary_low_max_score": -1.0026257038116455,
+      "counts": {
+        "deliberate": 1000,
+        "reactive": 1000
+      },
+      "family": "tempo",
+      "high_q": 0.9,
+      "intended_band_relative_to_paper_k6": "out_of_band",
+      "low_q": 0.1,
+      "method": "rank",
+      "mode": "binary_tails",
+      "n_high": 1000,
+      "n_low": 1000,
+      "n_valid": 10000,
+      "note": "Tempo extremes: bottom/top 10% tails; reply delay mean (z-scored).",
+      "score_cols": [
+        "gstat_reply_delay_mean"
+      ]
+    }
+  },
+  "preset": "all",
+  "sentiment_mode": "both",
+  "source": "author",
+  "tail_method": "rank",
+  "warnings": [
+    "[leakage] label 'curiosity' uses columns that overlap conditioning features: ['gstat_question_ratio']",
+    "[leakage] label 'expressiveness' uses columns that overlap conditioning features: ['gstat_punct_ratio']"
+  ]
+}

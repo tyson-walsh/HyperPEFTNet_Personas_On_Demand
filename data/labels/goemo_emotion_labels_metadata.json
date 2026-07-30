@@ -1,0 +1,61 @@
+{
+  "anxiety": {
+    "low_q": 0.1,
+    "high_q": 0.9,
+    "low_cut": 0.0019996767100034798,
+    "high_cut": 0.008198396816774475,
+    "low_label": "composed",
+    "high_label": "anxious",
+    "n_composed": 1000,
+    "n_anxious": 1000,
+    "n_total": 2000,
+    "n_source_users": 10000,
+    "emotions": [
+      "fear",
+      "nervousness"
+    ],
+    "score_formula": "mean(fear_mean, nervousness_mean)"
+  },
+  "warmth": {
+    "low_q": 0.1,
+    "high_q": 0.9,
+    "low_cut": 0.009924302335044296,
+    "high_cut": 0.03259565980523047,
+    "low_label": "detached",
+    "high_label": "warm",
+    "n_detached": 1000,
+    "n_warm": 1000,
+    "n_total": 2000,
+    "n_source_users": 10000,
+    "emotions": [
+      "caring",
+      "love",
+      "gratitude"
+    ],
+    "score_formula": "mean(caring_mean, love_mean, gratitude_mean)"
+  },
+  "hostility": {
+    "low_q": 0.1,
+    "high_q": 0.9,
+    "low_cut": 0.01977044060516178,
+    "high_cut": 0.042480755575003366,
+    "low_label": "agreeable",
+    "high_label": "hostile",
+    "n_agreeable": 1000,
+    "n_hostile": 1000,
+    "n_total": 2000,
+    "n_source_users": 10000,
+    "emotions": [
+      "anger",
+      "disgust",
+      "disapproval"
+    ],
+    "score_formula": "mean(anger_mean, disgust_mean, disapproval_mean)"
+  },
+  "_config": {
+    "source_file": "/workspace/data/goemo_user_emotions.csv",
+    "timestamp": "2026-04-12 04:01:14",
+    "default_low_q": 0.1,
+    "default_high_q": 0.9
+  }
+}

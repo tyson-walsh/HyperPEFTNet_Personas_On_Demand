@@ -35,9 +35,15 @@ Stability Index (PSI), the Persona Compositionality Index (PCI), and a multi-tur
   and VADER, each run as released.
 
 ## Data
-Profile vectors are computed from the public Pushshift Reddit archive (2010–2016). Usernames are
+The [`data/`](data/) directory holds the released artifacts: the per-author profile vectors
+(`profile_vectors_10000.parquet`, the 18 model-input features), the thread-level train/val/test
+split (`thread_split_10000.parquet`), and the cohort and axis labels (`labels/`). See
+[`data/README.md`](data/README.md) for schemas.
+
+Profile vectors are computed from the public Pushshift Reddit archive (2010 to 2016). Usernames are
 irreversibly hashed (SHA-256) before processing; no raw post text, account names, or person-tied
-weights are redistributed. See the paper's Data and Ethical Considerations sections.
+weights are redistributed. Every identifier in the released files is an integer with no bridge back
+to an account name. See the paper's Data and Ethical Considerations sections.
 
 ## Citation
 If you use this code, please cite the paper and the HyperPEFTNet preprint it builds on. Full

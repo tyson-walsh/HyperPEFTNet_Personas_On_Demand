@@ -1,0 +1,87 @@
+{
+  "mode": "goemo_sentiment_quintiles_rank",
+  "backend": "GoEmotions (Demszky et al., 2020; SamLowe/roberta-base-go_emotions)",
+  "score_column": "goemo_sent_mean",
+  "polarity_mapping": "simple: mean(12 positive) - mean(11 negative)",
+  "n_users": 10000,
+  "counts": {
+    "rage": 2000,
+    "grumpy": 2000,
+    "mellow": 2000,
+    "calm": 2000,
+    "empath": 2000
+  },
+  "rank_boundaries_score_at_fraction": {
+    "0.2": 0.001178640148850453,
+    "0.4": 0.005792269845978073,
+    "0.6": 0.010086093422880938,
+    "0.8": 0.016128997033738848
+  },
+  "binary_extremes": {
+    "low_q": 0.1,
+    "high_q": 0.9,
+    "low_cut": -0.0021561719019873174,
+    "high_cut": 0.021372947426884913,
+    "n_rage": 1000,
+    "n_empath": 1000,
+    "labels_file": "/workspace/data/labels_sentiment_goemo_extremes.csv"
+  },
+  "agreement": {},
+  "sensitivity_mapping": {
+    "rage_empath": {
+      "rage_emotions": [
+        "anger",
+        "annoyance",
+        "disapproval",
+        "disgust"
+      ],
+      "empath_emotions": [
+        "admiration",
+        "approval",
+        "caring",
+        "gratitude",
+        "joy"
+      ],
+      "labels_file": "/workspace/data/labels_sentiment_goemo_re.csv"
+    },
+    "simple": {
+      "positive_emotions": [
+        "admiration",
+        "amusement",
+        "approval",
+        "caring",
+        "desire",
+        "excitement",
+        "gratitude",
+        "joy",
+        "love",
+        "optimism",
+        "pride",
+        "relief"
+      ],
+      "negative_emotions": [
+        "anger",
+        "annoyance",
+        "disappointment",
+        "disapproval",
+        "disgust",
+        "embarrassment",
+        "fear",
+        "grief",
+        "nervousness",
+        "remorse",
+        "sadness"
+      ],
+      "labels_file": "/workspace/data/labels_sentiment_goemo.csv"
+    }
+  },
+  "per_emotion_file": "/workspace/data/goemo_user_emotions.csv",
+  "n_emotions": 28,
+  "timestamp": "2026-04-12 04:01:12",
+  "corpus_files": [
+    "train_data_10000.parquet",
+    "val_data_10000.parquet",
+    "test_data_10000.parquet"
+  ],
+  "model": "/workspace/models/roberta-goemo"
+}

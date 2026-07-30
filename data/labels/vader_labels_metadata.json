@@ -1,0 +1,36 @@
+{
+  "mode": "vader_sentiment_quintiles_rank",
+  "backend": "VADER (Hutto & Gilbert, 2014)",
+  "score_column": "vader_sent_mean",
+  "n_users": 10000,
+  "counts": {
+    "rage": 2000,
+    "grumpy": 2000,
+    "mellow": 2000,
+    "calm": 2000,
+    "empath": 2000
+  },
+  "rank_boundaries_score_at_fraction": {
+    "0.2": 0.02818299999999999,
+    "0.4": 0.06904833333333334,
+    "0.6": 0.10787157190635453,
+    "0.8": 0.16084833333333337
+  },
+  "agreement": {
+    "n_users_compared": 10000,
+    "exact_match_rate": 0.3456,
+    "extreme_match_rate": 0.4783,
+    "adjacent_match_rate": 0.7291,
+    "direction_match_rate": 0.6212,
+    "mean_ordinal_distance": 1.0234,
+    "n_exact_match": 3456,
+    "n_extreme_users": 4000,
+    "n_extreme_match": 1913
+  },
+  "timestamp": "2026-03-31 21:36:34",
+  "corpus_files": [
+    "train_data_10000.parquet",
+    "val_data_10000.parquet",
+    "test_data_10000.parquet"
+  ]
+}
